@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Familientreffen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Karla:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- LOGIN VIEW -->
+  <div id="login-view" class="view">
+    <div class="login-card">
+      <div class="login-mark">✻</div>
+      <h1 class="login-title" id="login-meeting-title">Familientreffen</h1>
+      <p class="login-sub" id="login-meeting-dates">Lade Termin …</p>
+
+      <form id="login-form">
+        <label class="field">
+          <span>Familien-Code</span>
+          <input type="text" id="login-code" placeholder="z. B. H7K2P9" required autocomplete="off">
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Reinkommen</button>
+        <p id="login-error" class="error-msg"></p>
+      </form>
+
+      <button id="show-admin-login" class="link-btn">Admin-Zugang</button>
+
+      <form id="admin-login-form" class="hidden">
+        <label class="field">
+          <span>Admin-Code</span>
+          <input type="password" id="admin-code" placeholder="Admin-Code" required>
+        </label>
+        <button type="submit" class="btn btn-secondary btn-block">Als Admin anmelden</button>
+        <p id="admin-login-error" class="error-msg"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- MAIN VIEW -->
+  <div id="main-view" class="view hidden">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="brand-mark">✻</span>
+          <span class="brand-name" id="topbar-title">Familientreffen</span>
+        </div>
+        <div class="topbar-right">
+          <span id="whoami" class="whoami"></span>
+          <button id="logout-btn" class="link-btn">Abmelden</button>
+        </div>
+      </div>
+      <nav class="tab-nav">
+        <div class="tab-nav-inner">
+          <button class="tab-btn active" data-tab="events">Programm</button>
+          <button class="tab-btn" data-tab="families">Wer kommt wann?</button>
+          <button class="tab-btn hidden" id="admin-tab-btn" data-tab="admin">Verwaltung</button>
+        </div>
+      </nav>
+    </header>
+
+    <main class="content">
+      <div class="content-inner">
+
+        <!-- TAB: EVENTS -->
+        <section id="tab-events" class="tab-panel">
+          <div class="page-heading">
+            <h1>Programm</h1>
+            <p class="page-sub" id="meeting-range-sub"></p>
+            <button id="add-event-btn" class="btn btn-primary btn-sm hidden">+ Programmpunkt</button>
+          </div>
+          <div id="events-list"></div>
+          <div id="events-empty" class="empty-state hidden">
+            <p>Noch steht kein Programm. Sobald Termine feststehen, erscheinen sie hier.</p>
+          </div>
+        </section>
+
+        <!-- TAB: FAMILIES / An-/Abreise -->
+        <section id="tab-families" class="tab-panel hidden">
+          <div class="page-heading">
+            <h1>Wer kommt wann?</h1>
+            <p class="page-sub">An- und Abreise aller angemeldeten Familien.</p>
+          </div>
+
+          <div id="my-family-card" class="my-family-card hidden">
+            <h3>Eure An-/Abreise</h3>
+            <form id="my-family-form">
+              <div class="field-row">
+                <label class="field">
+                  <span>Anreise</span>
+                  <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="my-arrival">
+                </label>
+                <label class="field">
+                  <span>Abreise</span>
+                  <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="my-departure">
+                </label>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm">Speichern</button>
+              <span id="my-family-saved" class="saved-note hidden">Gespeichert ✓</span>
+            </form>
+          </div>
+
+          <div id="families-list"></div>
+          <div id="families-empty" class="empty-state hidden">
+            <p>Noch sind keine Familien eingetragen.</p>
+          </div>
+        </section>
+
+        <!-- TAB: ADMIN -->
+        <section id="tab-admin" class="tab-panel hidden">
+          <div class="page-heading">
+            <h1>Verwaltung</h1>
+          </div>
+
+          <div class="admin-block">
+            <h3>Termin des Treffens</h3>
+            <form id="meeting-form">
+              <label class="field">
+                <span>Titel</span>
+                <input type="text" id="meeting-title-input" placeholder="z. B. Familientreffen 2026">
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>Start</span>
+                  <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-start">
+                </label>
+                <label class="field">
+                  <span>Ende</span>
+                  <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-end">
+                </label>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm">Speichern</button>
+              <span id="meeting-saved" class="saved-note hidden">Gespeichert ✓</span>
+            </form>
+          </div>
+
+          <div class="admin-block">
+            <div class="admin-block-header">
+              <h3>Familien &amp; Zugangscodes</h3>
+              <button id="add-family-btn" class="btn btn-primary btn-sm">+ Familie</button>
+            </div>
+            <div id="admin-families-list"></div>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+</div>
+
+<!-- EVENT MODAL -->
+<div id="event-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h2 id="event-modal-title">Programmpunkt</h2>
+    <form id="event-form">
+      <input type="hidden" id="event-id">
+      <label class="field">
+        <span>Titel</span>
+        <input type="text" id="event-title" required placeholder="z. B. Grillabend am See">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Datum</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="event-date" required>
+        </label>
+        <label class="field">
+          <span>Uhrzeit</span>
+          <input type="time" id="event-time">
+        </label>
+      </div>
+      <label class="field">
+        <span>Ort</span>
+        <input type="text" id="event-location" placeholder="z. B. Seestraße 12, 12345 Musterstadt">
+      </label>
+      <label class="field">
+        <span>Beschreibung</span>
+        <textarea id="event-description" rows="2" placeholder="Details, was mitzubringen ist, etc."></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="delete-event-btn" class="btn btn-danger hidden">Löschen</button>
+        <div class="modal-actions-right">
+          <button type="button" id="cancel-event-modal-btn" class="btn btn-ghost">Abbrechen</button>
+          <button type="submit" class="btn btn-primary">Speichern</button>
+        </div>
+      </div>
+      <p id="event-error" class="error-msg"></p>
+    </form>
+  </div>
+</div>
+
+<!-- REGISTER MODAL -->
+<div id="register-modal" class="modal-overlay hidden">
+  <div class="modal modal-narrow">
+    <h2>Anmelden für „<span id="register-event-title"></span>“</h2>
+    <form id="register-form">
+      <input type="hidden" id="register-event-id">
+      <label class="field">
+        <span>Anzahl Personen</span>
+        <input type="number" id="register-count" min="1" required>
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="unregister-btn" class="btn btn-danger hidden">Abmelden</button>
+        <div class="modal-actions-right">
+          <button type="button" id="cancel-register-btn" class="btn btn-ghost">Abbrechen</button>
+          <button type="submit" class="btn btn-primary">Eintragen</button>
+        </div>
+      </div>
+      <p id="register-error" class="error-msg"></p>
+    </form>
+  </div>
+</div>
+
+<!-- FAMILY MODAL (admin) -->
+<div id="family-modal" class="modal-overlay hidden">
+  <div class="modal modal-narrow">
+    <h2 id="family-modal-title">Familie</h2>
+    <form id="family-form">
+      <input type="hidden" id="family-id">
+      <label class="field">
+        <span>Familienname</span>
+        <input type="text" id="family-name" required placeholder="z. B. Brindöpke">
+      </label>
+      <label class="field">
+        <span>Anzahl Personen</span>
+        <input type="number" id="family-size" min="1" required placeholder="z. B. 3">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Anreise (optional)</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="family-arrival">
+        </label>
+        <label class="field">
+          <span>Abreise (optional)</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="family-departure">
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="delete-family-btn" class="btn btn-danger hidden">Löschen</button>
+        <div class="modal-actions-right">
+          <button type="button" id="cancel-family-modal-btn" class="btn btn-ghost">Abbrechen</button>
+          <button type="submit" class="btn btn-primary">Speichern</button>
+        </div>
+      </div>
+      <p id="family-error" class="error-msg"></p>
+    </form>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
