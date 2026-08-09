@@ -5,6 +5,7 @@ let state = {
   meeting: null,
   events: [],
   families: [],
+  pendingSetup: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -92,18 +93,65 @@ async function checkAuth() {
   state.authed = me.authed;
   state.admin = me.admin;
   state.family = me.family;
+  state.pendingSetup = !!me.pendingSetup;
   render();
 }
 
+// ----- Login-Tabs (Token / Account) -----
+$$('.login-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.login-tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    const tab = btn.dataset.loginTab;
+    $('#login-form').classList.toggle('hidden', tab !== 'token');
+    $('#account-login-form').classList.toggle('hidden', tab !== 'account');
+  });
+});
+
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const code = $('#login-code').value;
+  const token = $('#login-code').value;
   $('#login-error').textContent = '';
   try {
-    await api('/login', { method: 'POST', body: JSON.stringify({ code }) });
-    await checkAuth();
+    const result = await api('/login', { method: 'POST', body: JSON.stringify({ token }) });
+    if (result.needsSetup) {
+      state.pendingSetup = true;
+      render();
+    } else {
+      await checkAuth();
+    }
   } catch (err) {
     $('#login-error').textContent = err.message;
+  }
+});
+
+$('#account-login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const username = $('#account-login-username').value;
+  const password = $('#account-login-password').value;
+  $('#account-login-error').textContent = '';
+  try {
+    await api('/login-account', { method: 'POST', body: JSON.stringify({ username, password }) });
+    await checkAuth();
+  } catch (err) {
+    $('#account-login-error').textContent = err.message;
+  }
+});
+
+$('#account-setup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const username = $('#setup-username').value;
+  const password = $('#setup-password').value;
+  const confirm = $('#setup-password-confirm').value;
+  $('#account-setup-error').textContent = '';
+  if (password !== confirm) {
+    $('#account-setup-error').textContent = 'Passwörter stimmen nicht überein';
+    return;
+  }
+  try {
+    await api('/create-account', { method: 'POST', body: JSON.stringify({ username, password }) });
+    await checkAuth();
+  } catch (err) {
+    $('#account-setup-error').textContent = err.message;
   }
 });
 
@@ -125,7 +173,7 @@ $('#admin-login-form').addEventListener('submit', async (e) => {
 
 $('#logout-btn').addEventListener('click', async () => {
   await api('/logout', { method: 'POST' });
-  state = { authed: false, admin: false, family: null, meeting: null, events: [], families: [] };
+  state = { authed: false, admin: false, family: null, meeting: null, events: [], families: [], pendingSetup: false };
   render();
 });
 
@@ -164,6 +212,8 @@ function render() {
   } else {
     $('#login-view').classList.remove('hidden');
     $('#main-view').classList.add('hidden');
+    $('#login-step').classList.toggle('hidden', state.pendingSetup);
+    $('#account-setup-form').classList.toggle('hidden', !state.pendingSetup);
     loadPublicMeeting();
   }
 }
@@ -481,19 +531,26 @@ function renderAdminFamilies() {
     const dates = (f.arrivalDate || f.departureDate)
       ? `${f.arrivalDate ? formatDate(f.arrivalDate) : '?'} → ${f.departureDate ? formatDate(f.departureDate) : '?'}`
       : 'Termin offen';
+    const accountInfo = f.account
+      ? `Account: <strong>${escapeHtml(f.account.username)}</strong>`
+      : '<span class="no-dates">Noch kein Account</span>';
     row.innerHTML = `
       <div class="admin-family-info">
         <span class="admin-family-name">${escapeHtml(f.name)}</span>
         <span class="admin-family-meta">${f.size} ${f.size === 1 ? 'Person' : 'Personen'} · ${dates}</span>
+        <span class="admin-family-meta">${accountInfo}</span>
       </div>
-      <span class="admin-family-code">${f.code}</span>
+      <span class="admin-family-code">${f.token}</span>
       <div class="admin-family-actions">
         <button data-action="edit" data-id="${f.id}">Bearbeiten</button>
+        ${f.account ? `<button data-action="reset-account" data-id="${f.id}">Account zurücksetzen</button>` : ''}
         <button data-action="delete" data-id="${f.id}">Löschen</button>
       </div>
     `;
     row.querySelector('[data-action="edit"]').addEventListener('click', () => openFamilyModal(f));
     row.querySelector('[data-action="delete"]').addEventListener('click', () => deleteFamily(f));
+    const resetBtn = row.querySelector('[data-action="reset-account"]');
+    if (resetBtn) resetBtn.addEventListener('click', () => resetFamilyAccount(f));
     list.appendChild(row);
   });
 }
@@ -502,6 +559,16 @@ async function deleteFamily(f) {
   if (!confirm(`Familie "${f.name}" wirklich löschen? Alle Anmeldungen dieser Familie zu Events werden ebenfalls entfernt.`)) return;
   try {
     await api(`/admin/families/${f.id}`, { method: 'DELETE' });
+    await loadAdminTab();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function resetFamilyAccount(f) {
+  if (!confirm(`Account von Familie "${f.name}" wirklich zurücksetzen? Benutzername/Passwort werden gelöscht, der Familien-Token bleibt gültig und kann für einen neuen Account genutzt werden.`)) return;
+  try {
+    await api(`/admin/families/${f.id}/reset-account`, { method: 'POST' });
     await loadAdminTab();
   } catch (err) {
     alert(err.message);

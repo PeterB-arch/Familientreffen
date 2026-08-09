@@ -134,6 +134,19 @@ input, select, textarea { font-family: inherit; font-size: 15px; }
 
 #admin-login-form { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
 
+.login-tabs { display: flex; gap: 4px; margin-bottom: 22px; background: var(--linen-deep); border-radius: 9px; padding: 4px; }
+.login-tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8a7d68;
+}
+.login-tab-btn.active { background: var(--paper); color: var(--forest-deep); box-shadow: 0 1px 3px rgba(22, 36, 31, 0.12); }
+
 /* ===== Topbar ===== */
 .topbar { background: var(--forest-deep); border-bottom: 3px solid var(--gold); }
 

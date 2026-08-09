@@ -62,6 +62,11 @@ function loadData() {
   if (!data.meeting) data.meeting = { title: '', startDate: '', endDate: '' };
   if (!data.families) data.families = [];
   if (!data.events) data.events = [];
+  // Migration: aeltere Daten kannten nur "code" (Login-Code ohne Account).
+  data.families.forEach(f => {
+    if (!f.token && f.code) f.token = f.code;
+    if (f.account === undefined) f.account = null;
+  });
   return data;
 }
 
@@ -69,18 +74,51 @@ function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-// --- Familien-Codes ---
-const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // ohne 0/O/1/I zur besseren Lesbarkeit
-function generateFamilyCode(existingCodes) {
-  let code;
+// --- Familien-Token ---
+const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // ohne 0/O/1/I zur besseren Lesbarkeit
+function generateFamilyToken(existingTokens) {
+  let token;
   do {
-    code = Array.from({ length: 6 }, () => CODE_CHARS[crypto.randomInt(CODE_CHARS.length)]).join('');
-  } while (existingCodes.includes(code));
-  return code;
+    token = Array.from({ length: 6 }, () => TOKEN_CHARS[crypto.randomInt(TOKEN_CHARS.length)]).join('');
+  } while (existingTokens.includes(token));
+  return token;
+}
+
+// --- Passwort-Hashing (Node-eigenes scrypt, keine zusaetzliche Abhaengigkeit) ---
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(password, salt, hash) {
+  const test = crypto.scryptSync(password, salt, 64);
+  const stored = Buffer.from(hash, 'hex');
+  if (test.length !== stored.length) return false;
+  return crypto.timingSafeEqual(test, stored);
+}
+
+// Sobald ein Account existiert, wird ueberall (Events, "Wer kommt wann?",
+// Topbar) der selbstgewaehlte Accountname statt des von Admin vergebenen
+// Familiennamens angezeigt. Der Admin-Bereich sieht weiterhin beide.
+function displayName(f) {
+  return f.account ? f.account.username : f.name;
 }
 
 function publicFamily(f) {
-  return { id: f.id, name: f.name, size: f.size, arrivalDate: f.arrivalDate, departureDate: f.departureDate };
+  return { id: f.id, name: displayName(f), size: f.size, arrivalDate: f.arrivalDate, departureDate: f.departureDate };
+}
+
+function adminFamily(f) {
+  return {
+    id: f.id,
+    name: f.name,
+    token: f.token,
+    size: f.size,
+    arrivalDate: f.arrivalDate,
+    departureDate: f.departureDate,
+    account: f.account ? { username: f.account.username } : null
+  };
 }
 
 function enrichEvent(ev, families) {
@@ -88,7 +126,7 @@ function enrichEvent(ev, families) {
     ...ev,
     registrations: ev.registrations.map(r => {
       const fam = families.find(f => f.id === r.familyId);
-      return { familyId: r.familyId, familyName: fam ? fam.name : '(gelöscht)', count: r.count };
+      return { familyId: r.familyId, familyName: fam ? displayName(fam) : '(gelöscht)', count: r.count };
     })
   };
 }
@@ -109,15 +147,71 @@ function requireAdmin(req, res, next) {
 }
 
 // --- Auth Routen ---
+// Login per Familien-Token: Falls die Familie noch keinen Account hat, wird
+// eine "pending"-Session gestartet, in der ein Account (Benutzername +
+// Passwort) angelegt werden muss. Hat die Familie schon einen Account, loggt
+// der Token direkt ein (bleibt dauerhaft als Zugang/Recovery-Weg gueltig).
 app.post('/api/login', (req, res) => {
-  const { code } = req.body;
-  if (!code || !code.trim()) {
-    return res.status(400).json({ error: 'Bitte Familien-Code angeben' });
+  const { token } = req.body;
+  if (!token || !token.trim()) {
+    return res.status(400).json({ error: 'Bitte Familien-Token angeben' });
   }
   const data = loadData();
-  const family = data.families.find(f => f.code === code.trim().toUpperCase());
+  const family = data.families.find(f => f.token === token.trim().toUpperCase());
   if (!family) {
-    return res.status(401).json({ error: 'Falscher Familien-Code' });
+    return res.status(401).json({ error: 'Falscher Familien-Token' });
+  }
+  if (!family.account) {
+    req.session.pendingFamilyId = family.id;
+    return res.json({ success: true, needsSetup: true });
+  }
+  req.session.familyId = family.id;
+  res.json({ success: true, needsSetup: false, family: publicFamily(family) });
+});
+
+// Account anlegen: nur moeglich direkt nach einem gueltigen Token-Login
+// (req.session.pendingFamilyId), damit niemand ohne Token einen Account
+// fuer eine fremde Familie erstellen kann.
+app.post('/api/create-account', (req, res) => {
+  if (!req.session || !req.session.pendingFamilyId) {
+    return res.status(400).json({ error: 'Bitte zuerst mit dem Familien-Token anmelden' });
+  }
+  const data = loadData();
+  const family = data.families.find(f => f.id === req.session.pendingFamilyId);
+  if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
+  if (family.account) return res.status(400).json({ error: 'Für diese Familie existiert bereits ein Account' });
+
+  const { username, password } = req.body;
+  if (!username || !username.trim() || username.trim().length < 3) {
+    return res.status(400).json({ error: 'Benutzername muss mindestens 3 Zeichen haben' });
+  }
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben' });
+  }
+  const uname = username.trim();
+  const exists = data.families.some(f => f.account && f.account.username.toLowerCase() === uname.toLowerCase());
+  if (exists) {
+    return res.status(400).json({ error: 'Benutzername ist bereits vergeben' });
+  }
+
+  const { salt, hash } = hashPassword(password);
+  family.account = { username: uname, passwordSalt: salt, passwordHash: hash };
+  saveData(data);
+
+  delete req.session.pendingFamilyId;
+  req.session.familyId = family.id;
+  res.json({ success: true, family: publicFamily(family) });
+});
+
+app.post('/api/login-account', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Benutzername und Passwort erforderlich' });
+  }
+  const data = loadData();
+  const family = data.families.find(f => f.account && f.account.username.toLowerCase() === username.trim().toLowerCase());
+  if (!family || !verifyPassword(password, family.account.passwordSalt, family.account.passwordHash)) {
+    return res.status(401).json({ error: 'Benutzername oder Passwort falsch' });
   }
   req.session.familyId = family.id;
   res.json({ success: true, family: publicFamily(family) });
@@ -145,7 +239,12 @@ app.get('/api/me', (req, res) => {
     const f = data.families.find(x => x.id === req.session.familyId);
     if (f) family = publicFamily(f);
   }
-  res.json({ authed: admin || !!family, admin, family });
+  let pendingSetup = false;
+  if (!admin && !family && req.session && req.session.pendingFamilyId) {
+    const data = loadData();
+    pendingSetup = data.families.some(f => f.id === req.session.pendingFamilyId);
+  }
+  res.json({ authed: admin || !!family, admin, family, pendingSetup });
 });
 
 // --- Meeting ---
@@ -263,10 +362,10 @@ app.put('/api/my-family', requireAuth, (req, res) => {
   res.json(publicFamily(family));
 });
 
-// --- Familien-Verwaltung (Admin, inkl. Zugangscodes) ---
+// --- Familien-Verwaltung (Admin, inkl. Zugangs-Token) ---
 app.get('/api/admin/families', requireAdmin, (req, res) => {
   const data = loadData();
-  res.json(data.families);
+  res.json(data.families.map(adminFamily));
 });
 
 app.post('/api/admin/families', requireAdmin, (req, res) => {
@@ -278,14 +377,15 @@ app.post('/api/admin/families', requireAdmin, (req, res) => {
   const family = {
     id: crypto.randomUUID(),
     name: name.trim(),
-    code: generateFamilyCode(data.families.map(f => f.code)),
+    token: generateFamilyToken(data.families.map(f => f.token)),
     size: parseInt(size, 10),
     arrivalDate: arrivalDate || '',
-    departureDate: departureDate || ''
+    departureDate: departureDate || '',
+    account: null
   };
   data.families.push(family);
   saveData(data);
-  res.json(family);
+  res.json(adminFamily(family));
 });
 
 app.put('/api/admin/families/:id', requireAdmin, (req, res) => {
@@ -298,7 +398,7 @@ app.put('/api/admin/families/:id', requireAdmin, (req, res) => {
   if (arrivalDate !== undefined) family.arrivalDate = arrivalDate;
   if (departureDate !== undefined) family.departureDate = departureDate;
   saveData(data);
-  res.json(family);
+  res.json(adminFamily(family));
 });
 
 app.delete('/api/admin/families/:id', requireAdmin, (req, res) => {
@@ -309,6 +409,18 @@ app.delete('/api/admin/families/:id', requireAdmin, (req, res) => {
   });
   saveData(data);
   res.json({ success: true });
+});
+
+// Admin: Account einer Familie zuruecksetzen (z. B. Passwort vergessen und
+// Familie kann/will den Token nicht nutzen) - danach greift beim naechsten
+// Token-Login wieder der Account-Setup-Flow.
+app.post('/api/admin/families/:id/reset-account', requireAdmin, (req, res) => {
+  const data = loadData();
+  const family = data.families.find(f => f.id === req.params.id);
+  if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
+  family.account = null;
+  saveData(data);
+  res.json(adminFamily(family));
 });
 
 app.use(express.static(path.join(__dirname, 'public')));

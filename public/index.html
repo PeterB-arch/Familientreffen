@@ -19,13 +19,51 @@
       <h1 class="login-title" id="login-meeting-title">Familientreffen</h1>
       <p class="login-sub" id="login-meeting-dates">Lade Termin …</p>
 
-      <form id="login-form">
+      <div id="login-step">
+        <div class="login-tabs">
+          <button type="button" class="login-tab-btn active" data-login-tab="token">Familien-Token</button>
+          <button type="button" class="login-tab-btn" data-login-tab="account">Account</button>
+        </div>
+
+        <form id="login-form" class="login-tab-panel">
+          <label class="field">
+            <span>Familien-Token</span>
+            <input type="text" id="login-code" placeholder="z. B. H7K2P9" required autocomplete="off">
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Weiter</button>
+          <p id="login-error" class="error-msg"></p>
+        </form>
+
+        <form id="account-login-form" class="login-tab-panel hidden">
+          <label class="field">
+            <span>Benutzername</span>
+            <input type="text" id="account-login-username" required autocomplete="username">
+          </label>
+          <label class="field">
+            <span>Passwort</span>
+            <input type="password" id="account-login-password" required autocomplete="current-password">
+          </label>
+          <button type="submit" class="btn btn-primary btn-block">Anmelden</button>
+          <p id="account-login-error" class="error-msg"></p>
+        </form>
+      </div>
+
+      <form id="account-setup-form" class="hidden">
+        <p class="login-sub" style="margin:0 0 20px;">Noch kein Account für eure Familie – legt jetzt einen an. Der Familien-Token bleibt zusätzlich als Zugang gültig.</p>
         <label class="field">
-          <span>Familien-Code</span>
-          <input type="text" id="login-code" placeholder="z. B. H7K2P9" required autocomplete="off">
+          <span>Benutzername</span>
+          <input type="text" id="setup-username" placeholder="z. B. familie.mueller" required minlength="3" autocomplete="username">
         </label>
-        <button type="submit" class="btn btn-primary btn-block">Reinkommen</button>
-        <p id="login-error" class="error-msg"></p>
+        <label class="field">
+          <span>Passwort</span>
+          <input type="password" id="setup-password" required minlength="6" autocomplete="new-password">
+        </label>
+        <label class="field">
+          <span>Passwort wiederholen</span>
+          <input type="password" id="setup-password-confirm" required minlength="6" autocomplete="new-password">
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Account erstellen</button>
+        <p id="account-setup-error" class="error-msg"></p>
       </form>
 
       <button id="show-admin-login" class="link-btn">Admin-Zugang</button>
@@ -140,7 +178,7 @@
 
           <div class="admin-block">
             <div class="admin-block-header">
-              <h3>Familien &amp; Zugangscodes</h3>
+              <h3>Familien &amp; Zugangs-Token</h3>
               <button id="add-family-btn" class="btn btn-primary btn-sm">+ Familie</button>
             </div>
             <div id="admin-families-list"></div>
