@@ -524,7 +524,9 @@ function renderEventCard(ev) {
     ? `${formatDateLong(ev.date)} · ${ev.time} Uhr`
     : formatDateLong(ev.date);
 
-  const totalPeople = ev.registrations.reduce((sum, r) => sum + r.adults + r.children, 0);
+  const totalAdults = ev.registrations.reduce((sum, r) => sum + r.adults, 0);
+  const totalChildren = ev.registrations.reduce((sum, r) => sum + r.children, 0);
+  const totalPeople = totalAdults + totalChildren;
   const myReg = state.family ? ev.registrations.find(r => r.familyId === state.family.id) : null;
 
   card.innerHTML = `
@@ -540,7 +542,7 @@ function renderEventCard(ev) {
     <div class="event-bottom">
       <div class="registrations-header">
         <strong style="font-size:13px; color:#8a7d68;">Angemeldet</strong>
-        <span class="registrations-total">${totalPeople} ${totalPeople === 1 ? 'Person' : 'Personen'}</span>
+        <span class="registrations-total">${totalPeople} ${totalPeople === 1 ? 'Person' : 'Personen'}${totalPeople > 0 ? ` (${formatRegistration({ adults: totalAdults, children: totalChildren })})` : ''}</span>
       </div>
       <div class="registrations-list">
         ${ev.registrations.length === 0
