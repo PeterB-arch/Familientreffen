@@ -200,6 +200,25 @@
           </div>
 
           <div class="admin-block">
+            <h3>Zugangsdaten</h3>
+            <form id="settings-form">
+              <div class="field-row">
+                <label class="field">
+                  <span>Admin-Code</span>
+                  <input type="text" id="settings-admin-code" required autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>Familien-Token</span>
+                  <input type="text" id="settings-family-token" required autocomplete="off">
+                </label>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm">Speichern</button>
+              <span id="settings-saved" class="saved-note hidden">Gespeichert ✓</span>
+              <p id="settings-error" class="error-msg"></p>
+            </form>
+          </div>
+
+          <div class="admin-block">
             <div class="admin-block-header">
               <h3>Familientreffen</h3>
               <button id="add-meeting-btn" class="btn btn-primary btn-sm">+ Neues Treffen</button>

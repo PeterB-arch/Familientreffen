@@ -80,6 +80,7 @@ function loadData() {
   }
   if (!data.meetings) data.meetings = [];
   if (!data.families) data.families = [];
+  if (!data.settings) data.settings = {};
   data.meetings.forEach(m => {
     if (m.location === undefined) m.location = '';
   });
@@ -113,6 +114,16 @@ function loadData() {
 
 function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+// Admin-Code/Familien-Token: in der Verwaltung gesetzte Werte (data.settings)
+// haben Vorrang vor den Umgebungsvariablen-Standardwerten.
+function getAdminCode(data) {
+  return (data.settings && data.settings.adminCode) || ADMIN_CODE;
+}
+
+function getFamilyToken(data) {
+  return (data.settings && data.settings.familyToken) || FAMILY_TOKEN;
 }
 
 // --- Passwort-Hashing (Node-eigenes scrypt, keine zusaetzliche Abhaengigkeit) ---
@@ -280,7 +291,8 @@ function requireMeeting(req, res, next) {
 // einem Zug angelegt - danach laeuft der Login nur noch ueber Account.
 app.post('/api/register', (req, res) => {
   const { token, name, username, password } = req.body;
-  if (!token || token.trim().toUpperCase() !== FAMILY_TOKEN.toUpperCase()) {
+  const data = loadData();
+  if (!token || token.trim().toUpperCase() !== getFamilyToken(data).toUpperCase()) {
     return res.status(401).json({ error: 'Falscher Token' });
   }
   if (!name || !name.trim()) {
@@ -292,7 +304,6 @@ app.post('/api/register', (req, res) => {
   if (!password || password.length < 6) {
     return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben' });
   }
-  const data = loadData();
   const uname = username.trim();
   const exists = data.families.some(f => f.account && f.account.username.toLowerCase() === uname.toLowerCase());
   if (exists) {
@@ -330,7 +341,8 @@ app.post('/api/login-account', (req, res) => {
 
 app.post('/api/admin-login', (req, res) => {
   const { code } = req.body;
-  if (code === ADMIN_CODE) {
+  const data = loadData();
+  if (code === getAdminCode(data)) {
     req.session.admin = true;
     return res.json({ success: true });
   }
@@ -640,6 +652,29 @@ app.post('/api/admin/families/:id/set-password', requireAdmin, (req, res) => {
   family.account.passwordHash = hash;
   saveData(data);
   res.json(adminFamily(family));
+});
+
+// --- Zugangsdaten (Admin-Code, Familien-Token) ---
+// In der Verwaltung gesetzte Werte ueberschreiben die Umgebungsvariablen-
+// Standardwerte dauerhaft (gespeichert in data.json).
+app.get('/api/admin/settings', requireAdmin, (req, res) => {
+  const data = loadData();
+  res.json({ adminCode: getAdminCode(data), familyToken: getFamilyToken(data) });
+});
+
+app.put('/api/admin/settings', requireAdmin, (req, res) => {
+  const data = loadData();
+  const { adminCode, familyToken } = req.body;
+  if (!adminCode || !adminCode.trim()) {
+    return res.status(400).json({ error: 'Admin-Code darf nicht leer sein' });
+  }
+  if (!familyToken || !familyToken.trim()) {
+    return res.status(400).json({ error: 'Familien-Token darf nicht leer sein' });
+  }
+  data.settings.adminCode = adminCode.trim();
+  data.settings.familyToken = familyToken.trim();
+  saveData(data);
+  res.json({ adminCode: data.settings.adminCode, familyToken: data.settings.familyToken });
 });
 
 app.use(express.static(path.join(__dirname, 'public')));

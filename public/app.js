@@ -800,11 +800,28 @@ $('#participant-form').addEventListener('submit', async (e) => {
 
 // ===== Admin tab =====
 async function loadAdminTab() {
+  const settings = await api('/admin/settings');
+  $('#settings-admin-code').value = settings.adminCode;
+  $('#settings-family-token').value = settings.familyToken;
   state.adminMeetings = await api('/admin/meetings');
   renderAdminMeetings();
   state.adminFamilies = await api('/admin/families');
   renderAdminFamilies();
 }
+
+$('#settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#settings-error').textContent = '';
+  const adminCode = $('#settings-admin-code').value;
+  const familyToken = $('#settings-family-token').value;
+  try {
+    await api('/admin/settings', { method: 'PUT', body: JSON.stringify({ adminCode, familyToken }) });
+    $('#settings-saved').classList.remove('hidden');
+    setTimeout(() => $('#settings-saved').classList.add('hidden'), 2000);
+  } catch (err) {
+    $('#settings-error').textContent = err.message;
+  }
+});
 
 // ----- Meeting management -----
 function getMeetingFilterRange() {
