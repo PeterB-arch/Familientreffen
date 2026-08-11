@@ -29,7 +29,9 @@ ports_description:
 # und wird bei Supervisor-Backups automatisch mitgesichert.
 options:
   admin_code: "admin2026"
+  family_token: "familie2026"
   session_secret: ""
 schema:
   admin_code: str
+  family_token: str
   session_secret: str?

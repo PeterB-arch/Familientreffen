@@ -16,54 +16,50 @@
   <div id="login-view" class="view">
     <div class="login-card">
       <div class="login-mark">✻</div>
-      <h1 class="login-title" id="login-meeting-title">Familientreffen</h1>
-      <p class="login-sub" id="login-meeting-dates">Lade Termin …</p>
+      <h1 class="login-title">Familienfest-Planer</h1>
+      <p class="login-sub">Meldet euch mit eurem Einladungs-Token an oder loggt euch mit eurem Account ein.</p>
 
-      <div id="login-step">
-        <div class="login-tabs">
-          <button type="button" class="login-tab-btn active" data-login-tab="token">Familien-Token</button>
-          <button type="button" class="login-tab-btn" data-login-tab="account">Account</button>
-        </div>
-
-        <form id="login-form" class="login-tab-panel">
-          <label class="field">
-            <span>Familien-Token</span>
-            <input type="text" id="login-code" placeholder="z. B. H7K2P9" required autocomplete="off">
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Weiter</button>
-          <p id="login-error" class="error-msg"></p>
-        </form>
-
-        <form id="account-login-form" class="login-tab-panel hidden">
-          <label class="field">
-            <span>Benutzername</span>
-            <input type="text" id="account-login-username" required autocomplete="username">
-          </label>
-          <label class="field">
-            <span>Passwort</span>
-            <input type="password" id="account-login-password" required autocomplete="current-password">
-          </label>
-          <button type="submit" class="btn btn-primary btn-block">Anmelden</button>
-          <p id="account-login-error" class="error-msg"></p>
-        </form>
+      <div class="login-tabs">
+        <button type="button" class="login-tab-btn active" data-login-tab="register">Registrieren</button>
+        <button type="button" class="login-tab-btn" data-login-tab="account">Account</button>
       </div>
 
-      <form id="account-setup-form" class="hidden">
-        <p class="login-sub" style="margin:0 0 20px;">Noch kein Account für eure Familie – legt jetzt einen an. Der Familien-Token bleibt zusätzlich als Zugang gültig.</p>
+      <form id="register-form" class="login-tab-panel">
+        <label class="field">
+          <span>Token</span>
+          <input type="text" id="register-token" placeholder="z. B. H7K2P9" required autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Familienname</span>
+          <input type="text" id="register-name" placeholder="z. B. Familie Müller" required>
+        </label>
         <label class="field">
           <span>Benutzername</span>
-          <input type="text" id="setup-username" placeholder="z. B. familie.mueller" required minlength="3" autocomplete="username">
+          <input type="text" id="register-username" placeholder="z. B. familie.mueller" required minlength="3" autocomplete="username">
         </label>
         <label class="field">
           <span>Passwort</span>
-          <input type="password" id="setup-password" required minlength="6" autocomplete="new-password">
+          <input type="password" id="register-password" required minlength="6" autocomplete="new-password">
         </label>
         <label class="field">
           <span>Passwort wiederholen</span>
-          <input type="password" id="setup-password-confirm" required minlength="6" autocomplete="new-password">
+          <input type="password" id="register-password-confirm" required minlength="6" autocomplete="new-password">
         </label>
         <button type="submit" class="btn btn-primary btn-block">Account erstellen</button>
-        <p id="account-setup-error" class="error-msg"></p>
+        <p id="register-error" class="error-msg"></p>
+      </form>
+
+      <form id="account-login-form" class="login-tab-panel hidden">
+        <label class="field">
+          <span>Benutzername</span>
+          <input type="text" id="account-login-username" required autocomplete="username">
+        </label>
+        <label class="field">
+          <span>Passwort</span>
+          <input type="password" id="account-login-password" required autocomplete="current-password">
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Anmelden</button>
+        <p id="account-login-error" class="error-msg"></p>
       </form>
 
       <button id="show-admin-login" class="link-btn">Admin-Zugang</button>
@@ -79,6 +75,49 @@
     </div>
   </div>
 
+  <!-- MEETING PICKER VIEW -->
+  <div id="meeting-picker-view" class="view hidden">
+    <div class="login-card">
+      <div class="login-mark">✻</div>
+      <h1 class="login-title">Wählt euer Treffen</h1>
+      <p class="login-sub">In welchem Familientreffen möchtet ihr gerade arbeiten?</p>
+      <button id="picker-logout-btn" class="link-btn" style="margin:0 0 18px;">Abmelden</button>
+      <button id="picker-admin-btn" class="btn btn-secondary btn-block hidden" style="margin-bottom:18px;">Zur Verwaltung</button>
+      <div id="meeting-pick-list"></div>
+      <div id="meeting-pick-empty" class="empty-state hidden">
+        <p>Aktuell ist kein Treffen aktiv.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MEETING SIGNUP VIEW (Pflicht-An-/Abreise vor Event-Anmeldung) -->
+  <div id="meeting-signup-view" class="view hidden">
+    <div class="login-card">
+      <div class="login-mark">✻</div>
+      <h1 class="login-title" id="signup-meeting-title">Meldet euch an</h1>
+      <p class="login-sub">Bevor ihr euch für einzelne Programmpunkte eintragen könnt, sagt uns kurz, wie viele Personen kommen und wann ihr da seid.</p>
+      <button id="signup-back-btn" class="link-btn" style="margin:0 0 18px;">Zurück zur Treffen-Auswahl</button>
+      <form id="meeting-signup-form">
+        <label class="field">
+          <span>Anzahl Personen</span>
+          <input type="number" id="signup-size" min="1" required>
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>Anreise</span>
+            <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="signup-arrival">
+          </label>
+          <label class="field">
+            <span>Abreise</span>
+            <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="signup-departure">
+          </label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Weiter zum Programm</button>
+        <p id="meeting-signup-error" class="error-msg"></p>
+      </form>
+    </div>
+  </div>
+
   <!-- MAIN VIEW -->
   <div id="main-view" class="view hidden">
     <header class="topbar">
@@ -88,6 +127,7 @@
           <span class="brand-name" id="topbar-title">Familientreffen</span>
         </div>
         <div class="topbar-right">
+          <button id="switch-meeting-btn" class="meeting-switch-btn"></button>
           <span id="whoami" class="whoami"></span>
           <button id="logout-btn" class="link-btn">Abmelden</button>
         </div>
@@ -109,6 +149,7 @@
           <div class="page-heading">
             <h1>Programm</h1>
             <p class="page-sub" id="meeting-range-sub"></p>
+            <p class="page-sub" id="meeting-location-sub"></p>
             <button id="add-event-btn" class="btn btn-primary btn-sm hidden">+ Programmpunkt</button>
           </div>
           <div id="events-list"></div>
@@ -128,6 +169,10 @@
             <h3>Eure An-/Abreise</h3>
             <form id="my-family-form">
               <div class="field-row">
+                <label class="field">
+                  <span>Anzahl Personen</span>
+                  <input type="number" id="my-size" min="1" required>
+                </label>
                 <label class="field">
                   <span>Anreise</span>
                   <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="my-arrival">
@@ -155,31 +200,27 @@
           </div>
 
           <div class="admin-block">
-            <h3>Termin des Treffens</h3>
-            <form id="meeting-form">
+            <div class="admin-block-header">
+              <h3>Familientreffen</h3>
+              <button id="add-meeting-btn" class="btn btn-primary btn-sm">+ Neues Treffen</button>
+            </div>
+            <div class="field-row meeting-filter-row">
               <label class="field">
-                <span>Titel</span>
-                <input type="text" id="meeting-title-input" placeholder="z. B. Familientreffen 2026">
+                <span>Von</span>
+                <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-filter-from">
               </label>
-              <div class="field-row">
-                <label class="field">
-                  <span>Start</span>
-                  <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-start">
-                </label>
-                <label class="field">
-                  <span>Ende</span>
-                  <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-end">
-                </label>
-              </div>
-              <button type="submit" class="btn btn-primary btn-sm">Speichern</button>
-              <span id="meeting-saved" class="saved-note hidden">Gespeichert ✓</span>
-            </form>
+              <label class="field">
+                <span>Bis</span>
+                <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-filter-to">
+              </label>
+              <button type="button" id="meeting-filter-clear" class="btn btn-ghost btn-sm">Filter zurücksetzen</button>
+            </div>
+            <div id="admin-meetings-list"></div>
           </div>
 
           <div class="admin-block">
             <div class="admin-block-header">
-              <h3>Familien &amp; Zugangs-Token</h3>
-              <button id="add-family-btn" class="btn btn-primary btn-sm">+ Familie</button>
+              <h3>Familien</h3>
             </div>
             <div id="admin-families-list"></div>
           </div>
@@ -189,6 +230,49 @@
     </main>
   </div>
 
+</div>
+
+<!-- MEETING MODAL (admin) -->
+<div id="meeting-modal" class="modal-overlay hidden">
+  <div class="modal modal-narrow">
+    <h2 id="meeting-modal-title">Treffen</h2>
+    <form id="meeting-form">
+      <input type="hidden" id="meeting-id">
+      <label class="field">
+        <span>Titel</span>
+        <input type="text" id="meeting-title-input" required placeholder="z. B. Familientreffen 2026">
+      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Start</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-start" required>
+        </label>
+        <label class="field">
+          <span>Ende</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="meeting-end" required>
+        </label>
+      </div>
+      <label class="field">
+        <span>Adresse</span>
+        <input type="text" id="meeting-location" placeholder="z. B. Seestraße 12, 12345 Musterstadt">
+      </label>
+      <label class="field" id="meeting-status-field">
+        <span>Status</span>
+        <select id="meeting-status-input">
+          <option value="active">Aktiv</option>
+          <option value="inactive">Inaktiv</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="delete-meeting-btn" class="btn btn-danger hidden">Löschen</button>
+        <div class="modal-actions-right">
+          <button type="button" id="cancel-meeting-modal-btn" class="btn btn-ghost">Abbrechen</button>
+          <button type="submit" class="btn btn-primary">Speichern</button>
+        </div>
+      </div>
+      <p id="meeting-error" class="error-msg"></p>
+    </form>
+  </div>
 </div>
 
 <!-- EVENT MODAL -->
@@ -208,7 +292,7 @@
         </label>
         <label class="field">
           <span>Uhrzeit</span>
-          <input type="time" id="event-time">
+          <input type="text" inputmode="numeric" placeholder="HH:MM" maxlength="5" pattern="[0-2][0-9]:[0-5][0-9]" id="event-time">
         </label>
       </div>
       <label class="field">
@@ -235,12 +319,18 @@
 <div id="register-modal" class="modal-overlay hidden">
   <div class="modal modal-narrow">
     <h2>Anmelden für „<span id="register-event-title"></span>“</h2>
-    <form id="register-form">
+    <form id="event-register-form">
       <input type="hidden" id="register-event-id">
-      <label class="field">
-        <span>Anzahl Personen</span>
-        <input type="number" id="register-count" min="1" required>
-      </label>
+      <div class="field-row">
+        <label class="field">
+          <span>Erwachsene</span>
+          <input type="number" id="register-adults" min="0" required>
+        </label>
+        <label class="field">
+          <span>Kinder</span>
+          <input type="number" id="register-children" min="0" required>
+        </label>
+      </div>
       <div class="modal-actions">
         <button type="button" id="unregister-btn" class="btn btn-danger hidden">Abmelden</button>
         <div class="modal-actions-right">
@@ -253,38 +343,54 @@
   </div>
 </div>
 
-<!-- FAMILY MODAL (admin) -->
-<div id="family-modal" class="modal-overlay hidden">
+<!-- PARTICIPANT MODAL (admin bearbeitet Groesse/An-/Abreise im aktuellen Treffen) -->
+<div id="participant-modal" class="modal-overlay hidden">
   <div class="modal modal-narrow">
-    <h2 id="family-modal-title">Familie</h2>
-    <form id="family-form">
-      <input type="hidden" id="family-id">
-      <label class="field">
-        <span>Familienname</span>
-        <input type="text" id="family-name" required placeholder="z. B. Brindöpke">
-      </label>
+    <h2 id="participant-modal-title">Teilnehmer bearbeiten</h2>
+    <form id="participant-form">
+      <input type="hidden" id="participant-family-id">
       <label class="field">
         <span>Anzahl Personen</span>
-        <input type="number" id="family-size" min="1" required placeholder="z. B. 3">
+        <input type="number" id="participant-size" min="1" required>
       </label>
       <div class="field-row">
         <label class="field">
-          <span>Anreise (optional)</span>
-          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="family-arrival">
+          <span>Anreise</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="participant-arrival">
         </label>
         <label class="field">
-          <span>Abreise (optional)</span>
-          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="family-departure">
+          <span>Abreise</span>
+          <input type="text" inputmode="numeric" placeholder="TT.MM.JJJJ" maxlength="10" pattern="\d{2}\.\d{2}\.\d{4}" id="participant-departure">
         </label>
       </div>
       <div class="modal-actions">
-        <button type="button" id="delete-family-btn" class="btn btn-danger hidden">Löschen</button>
         <div class="modal-actions-right">
-          <button type="button" id="cancel-family-modal-btn" class="btn btn-ghost">Abbrechen</button>
+          <button type="button" id="cancel-participant-modal-btn" class="btn btn-ghost">Abbrechen</button>
           <button type="submit" class="btn btn-primary">Speichern</button>
         </div>
       </div>
-      <p id="family-error" class="error-msg"></p>
+      <p id="participant-error" class="error-msg"></p>
+    </form>
+  </div>
+</div>
+
+<!-- SET PASSWORD MODAL (admin) -->
+<div id="set-password-modal" class="modal-overlay hidden">
+  <div class="modal modal-narrow">
+    <h2>Neues Passwort setzen</h2>
+    <form id="set-password-form">
+      <input type="hidden" id="set-password-family-id">
+      <label class="field">
+        <span>Neues Passwort</span>
+        <input type="password" id="set-password-value" required minlength="6" autocomplete="new-password">
+      </label>
+      <div class="modal-actions">
+        <div class="modal-actions-right">
+          <button type="button" id="cancel-set-password-modal-btn" class="btn btn-ghost">Abbrechen</button>
+          <button type="submit" class="btn btn-primary">Speichern</button>
+        </div>
+      </div>
+      <p id="set-password-error" class="error-msg"></p>
     </form>
   </div>
 </div>

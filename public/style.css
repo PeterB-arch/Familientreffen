@@ -32,7 +32,7 @@ button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; font-size: 15px; }
 
 /* ===== Login ===== */
-#login-view {
+#login-view, #meeting-picker-view {
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -94,6 +94,24 @@ input, select, textarea { font-family: inherit; font-size: 15px; }
 }
 
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.date-input-wrap { position: relative; display: block; }
+.date-input-wrap input.has-date-picker { padding-right: 38px; }
+.date-picker-hidden { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; left: 0; top: 0; }
+.date-picker-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.date-picker-btn:hover { opacity: 1; }
 
 .btn {
   border: none;
@@ -167,6 +185,17 @@ input, select, textarea { font-family: inherit; font-size: 15px; }
 .whoami { color: var(--gold-soft); font-size: 13.5px; font-weight: 600; }
 .topbar .link-btn { color: rgba(245, 239, 227, 0.65); }
 .topbar .link-btn:hover { color: var(--linen); }
+
+.meeting-switch-btn {
+  background: rgba(245, 239, 227, 0.1);
+  border: 1px solid rgba(245, 239, 227, 0.25);
+  color: var(--linen);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.meeting-switch-btn:hover { background: rgba(245, 239, 227, 0.18); }
 
 .tab-nav-inner {
   max-width: 900px;
@@ -331,6 +360,9 @@ input, select, textarea { font-family: inherit; font-size: 15px; }
 .family-row-dates { font-size: 13.5px; color: var(--forest); text-align: right; }
 .family-row-dates .no-dates { color: #a89b85; font-style: italic; }
 
+.meeting-pick-card { cursor: pointer; text-align: left; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.meeting-pick-card:hover { border-color: var(--gold); box-shadow: 0 2px 8px rgba(22, 36, 31, 0.08); }
+
 /* ===== Admin ===== */
 .admin-block {
   background: var(--paper);
@@ -385,6 +417,32 @@ input, select, textarea { font-family: inherit; font-size: 15px; }
 }
 .admin-family-actions button:hover { color: var(--forest); }
 
+.admin-meeting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.meeting-filter-row { align-items: end; margin-bottom: 18px; }
+.meeting-filter-row .btn { margin-bottom: 16px; }
+
+.status-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.status-badge.active { background: rgba(74, 122, 94, 0.15); color: var(--success); }
+.status-badge.inactive { background: var(--linen-deep); color: #8a7d68; }
+.status-badge.past { background: rgba(168, 67, 47, 0.1); color: var(--danger); }
+
 /* ===== Modal ===== */
 .modal-overlay {
   position: fixed;
@@ -419,6 +477,6 @@ input, select, textarea { font-family: inherit; font-size: 15px; }
   .topbar-right { gap: 8px; }
   .whoami { display: none; }
   .page-heading h1 { font-size: 28px; }
-  .family-row, .admin-family-row { flex-direction: column; align-items: flex-start; }
+  .family-row, .admin-family-row, .admin-meeting-row { flex-direction: column; align-items: flex-start; }
   .family-row-dates { text-align: left; }
 }

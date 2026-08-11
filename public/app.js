@@ -2,10 +2,13 @@ let state = {
   authed: false,
   admin: false,
   family: null,
-  meeting: null,
+  currentMeetingId: null,
+  currentMeeting: null,
+  meetings: [],
+  adminMeetings: [],
+  adminFamilies: [],
   events: [],
   families: [],
-  pendingSetup: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -17,7 +20,11 @@ async function api(path, options = {}) {
     ...options,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Fehler');
+  if (!res.ok) {
+    const err = new Error(data.error || 'Fehler');
+    err.code = data.code;
+    throw err;
+  }
   return data;
 }
 
@@ -43,6 +50,8 @@ function mapsLink(address) {
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
 }
 
+const STATUS_LABELS = { active: 'Aktiv', inactive: 'Inaktiv', past: 'Vorbei' };
+
 // ===== Datumsfelder: Anzeige/Eingabe immer TT.MM.JJJJ, Speicherung als ISO (YYYY-MM-DD) =====
 function parseDisplayDate(str) {
   if (!str || !str.trim()) return '';
@@ -60,6 +69,41 @@ function readDateField(id, fieldLabel) {
   return iso;
 }
 
+function addDays(iso, days) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Sofortiges Feedback im Browser, Server validiert dieselben Regeln nochmal
+// verbindlich: An-/Abreise max. 7 Tage vor/nach dem Treffen.
+function readStayDateField(id, fieldLabel) {
+  const iso = readDateField(id, fieldLabel);
+  if (!iso || !state.currentMeeting) return iso;
+  const min = addDays(state.currentMeeting.startDate, -7);
+  const max = addDays(state.currentMeeting.endDate, 7);
+  if (iso < min || iso > max) {
+    throw new Error(`${fieldLabel} muss zwischen ${formatDate(min)} und ${formatDate(max)} liegen (max. 7 Tage vor/nach dem Treffen)`);
+  }
+  return iso;
+}
+
+// Anreise darf nicht nach der Abreise liegen (Gleichstand = ein Tag = erlaubt).
+function checkStayOrder(arrivalIso, departureIso) {
+  if (arrivalIso && departureIso && arrivalIso > departureIso) {
+    throw new Error('Anreise muss vor oder gleich der Abreise liegen');
+  }
+}
+
+// Events muessen immer im Zeitraum des Treffens liegen.
+function readEventDateField(id, fieldLabel) {
+  const iso = readDateField(id, fieldLabel);
+  if (state.currentMeeting && (iso < state.currentMeeting.startDate || iso > state.currentMeeting.endDate)) {
+    throw new Error(`${fieldLabel} muss zwischen ${formatDate(state.currentMeeting.startDate)} und ${formatDate(state.currentMeeting.endDate)} liegen (Zeitraum des Treffens)`);
+  }
+  return iso;
+}
+
 function attachDateMask(input) {
   input.addEventListener('input', () => {
     const digits = input.value.replace(/\D/g, '').slice(0, 8);
@@ -70,22 +114,125 @@ function attachDateMask(input) {
   });
 }
 
-['#my-arrival', '#my-departure', '#meeting-start', '#meeting-end', '#event-date', '#family-arrival', '#family-departure']
-  .forEach(sel => attachDateMask($(sel)));
+// Ergaenzt einen Kalender-Button neben dem maskierten TT.MM.JJJJ-Textfeld.
+// Nutzt einen unsichtbaren nativen type="date"-Picker nur zur Auswahl, damit
+// die Anzeige weiterhin immer TT.MM.JJJJ bleibt (unabhaengig von OS/Browser-Locale).
+function attachDatePicker(input) {
+  const wrap = document.createElement('span');
+  wrap.className = 'date-input-wrap';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  input.classList.add('has-date-picker');
 
-// ===== Meeting title on login screen (public, no auth needed) =====
-async function loadPublicMeeting() {
-  try {
-    const meeting = await api('/meeting');
-    if (meeting.title) $('#login-meeting-title').textContent = meeting.title;
-    if (meeting.startDate && meeting.endDate) {
-      $('#login-meeting-dates').textContent =
-        `${formatDate(meeting.startDate)} – ${formatDate(meeting.endDate)}`;
+  const hidden = document.createElement('input');
+  hidden.type = 'date';
+  hidden.className = 'date-picker-hidden';
+  hidden.tabIndex = -1;
+  wrap.appendChild(hidden);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'date-picker-btn';
+  btn.setAttribute('aria-label', 'Kalender öffnen');
+  btn.textContent = '📅';
+  wrap.appendChild(btn);
+
+  btn.addEventListener('click', () => {
+    const iso = parseDisplayDate(input.value);
+    hidden.value = iso || '';
+    if (hidden.showPicker) {
+      hidden.showPicker();
     } else {
-      $('#login-meeting-dates').textContent = 'Alle Termine an einem Ort.';
+      hidden.focus();
+      hidden.click();
     }
-  } catch (e) { /* egal, Default bleibt stehen */ }
+  });
+
+  hidden.addEventListener('change', () => {
+    if (hidden.value) {
+      input.value = formatDate(hidden.value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
 }
+
+[
+  '#my-arrival', '#my-departure', '#meeting-start', '#meeting-end', '#event-date',
+  '#participant-arrival', '#participant-departure', '#meeting-filter-from', '#meeting-filter-to',
+  '#signup-arrival', '#signup-departure'
+].forEach(sel => {
+  attachDateMask($(sel));
+  attachDatePicker($(sel));
+});
+
+// ===== Uhrzeit: immer 24h-Format (HH:MM), unabhaengig von OS/Browser-Locale =====
+function parseDisplayTime(str) {
+  if (!str || !str.trim()) return '';
+  const m = str.trim().match(/^(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [, h, mi] = m;
+  if (h > 23 || mi > 59) return null;
+  return `${h}:${mi}`;
+}
+
+function readTimeField(id, fieldLabel) {
+  const iso = parseDisplayTime($(id).value);
+  if (iso === null) throw new Error(`Ungültige Uhrzeit bei "${fieldLabel}" – bitte HH:MM (24h) verwenden`);
+  return iso;
+}
+
+function attachTimeMask(input) {
+  input.addEventListener('input', () => {
+    const digits = input.value.replace(/\D/g, '').slice(0, 4);
+    let out = digits;
+    if (digits.length > 2) out = `${digits.slice(0, 2)}:${digits.slice(2)}`;
+    input.value = out;
+  });
+}
+
+// Analog zu attachDatePicker, aber fuer Uhrzeiten: der native type="time"-Picker
+// liefert seinen Wert immer als 24h "HH:MM", unabhaengig davon wie er selbst
+// angezeigt wird - genau das landet unveraendert im sichtbaren Textfeld.
+function attachTimePicker(input) {
+  const wrap = document.createElement('span');
+  wrap.className = 'date-input-wrap';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  input.classList.add('has-date-picker');
+
+  const hidden = document.createElement('input');
+  hidden.type = 'time';
+  hidden.className = 'date-picker-hidden';
+  hidden.tabIndex = -1;
+  wrap.appendChild(hidden);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'date-picker-btn';
+  btn.setAttribute('aria-label', 'Uhrzeit wählen');
+  btn.textContent = '🕒';
+  wrap.appendChild(btn);
+
+  btn.addEventListener('click', () => {
+    hidden.value = parseDisplayTime(input.value) || '';
+    if (hidden.showPicker) {
+      hidden.showPicker();
+    } else {
+      hidden.focus();
+      hidden.click();
+    }
+  });
+
+  hidden.addEventListener('change', () => {
+    if (hidden.value) {
+      input.value = hidden.value.slice(0, 5);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
+}
+
+attachTimeMask($('#event-time'));
+attachTimePicker($('#event-time'));
 
 // ===== Auth =====
 async function checkAuth() {
@@ -93,34 +240,38 @@ async function checkAuth() {
   state.authed = me.authed;
   state.admin = me.admin;
   state.family = me.family;
-  state.pendingSetup = !!me.pendingSetup;
+  state.currentMeetingId = me.currentMeeting ? me.currentMeeting.id : null;
+  state.currentMeeting = me.currentMeeting;
   render();
 }
 
-// ----- Login-Tabs (Token / Account) -----
+// ----- Login-Tabs (Registrieren / Account) -----
 $$('.login-tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     $$('.login-tab-btn').forEach(b => b.classList.toggle('active', b === btn));
     const tab = btn.dataset.loginTab;
-    $('#login-form').classList.toggle('hidden', tab !== 'token');
+    $('#register-form').classList.toggle('hidden', tab !== 'register');
     $('#account-login-form').classList.toggle('hidden', tab !== 'account');
   });
 });
 
-$('#login-form').addEventListener('submit', async (e) => {
+$('#register-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const token = $('#login-code').value;
-  $('#login-error').textContent = '';
+  const token = $('#register-token').value;
+  const name = $('#register-name').value;
+  const username = $('#register-username').value;
+  const password = $('#register-password').value;
+  const confirm = $('#register-password-confirm').value;
+  $('#register-error').textContent = '';
+  if (password !== confirm) {
+    $('#register-error').textContent = 'Passwörter stimmen nicht überein';
+    return;
+  }
   try {
-    const result = await api('/login', { method: 'POST', body: JSON.stringify({ token }) });
-    if (result.needsSetup) {
-      state.pendingSetup = true;
-      render();
-    } else {
-      await checkAuth();
-    }
+    await api('/register', { method: 'POST', body: JSON.stringify({ token, name, username, password }) });
+    await checkAuth();
   } catch (err) {
-    $('#login-error').textContent = err.message;
+    $('#register-error').textContent = err.message;
   }
 });
 
@@ -134,24 +285,6 @@ $('#account-login-form').addEventListener('submit', async (e) => {
     await checkAuth();
   } catch (err) {
     $('#account-login-error').textContent = err.message;
-  }
-});
-
-$('#account-setup-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const username = $('#setup-username').value;
-  const password = $('#setup-password').value;
-  const confirm = $('#setup-password-confirm').value;
-  $('#account-setup-error').textContent = '';
-  if (password !== confirm) {
-    $('#account-setup-error').textContent = 'Passwörter stimmen nicht überein';
-    return;
-  }
-  try {
-    await api('/create-account', { method: 'POST', body: JSON.stringify({ username, password }) });
-    await checkAuth();
-  } catch (err) {
-    $('#account-setup-error').textContent = err.message;
   }
 });
 
@@ -171,10 +304,64 @@ $('#admin-login-form').addEventListener('submit', async (e) => {
   }
 });
 
-$('#logout-btn').addEventListener('click', async () => {
+async function doLogout() {
   await api('/logout', { method: 'POST' });
-  state = { authed: false, admin: false, family: null, meeting: null, events: [], families: [], pendingSetup: false };
+  state = { authed: false, admin: false, family: null, currentMeetingId: null, currentMeeting: null, meetings: [], adminMeetings: [], adminFamilies: [], events: [], families: [] };
   render();
+}
+
+$('#logout-btn').addEventListener('click', doLogout);
+$('#picker-logout-btn').addEventListener('click', doLogout);
+
+// Admin-Einstieg ohne ausgewaehltes Treffen (z. B. um das allererste Treffen
+// anzulegen, wenn noch keins existiert - die normale Treffen-Auswahl waere
+// sonst eine Sackgasse: es gibt ja noch nichts zum Auswaehlen).
+function showAdminHome() {
+  hideAllViews();
+  $('#main-view').classList.remove('hidden');
+  $('#whoami').textContent = 'Admin';
+  $('#admin-tab-btn').classList.remove('hidden');
+  $('#add-event-btn').classList.add('hidden');
+  $('#switch-meeting-btn').classList.remove('hidden');
+  $('#switch-meeting-btn').textContent = 'Treffen wählen';
+  $('#topbar-title').textContent = 'Familienfest-Planer';
+  $('#meeting-range-sub').textContent = '';
+  $('#meeting-location-sub').textContent = '';
+  switchTab('admin');
+}
+
+$('#picker-admin-btn').addEventListener('click', showAdminHome);
+
+$('#switch-meeting-btn').addEventListener('click', () => {
+  state.currentMeetingId = null;
+  state.currentMeeting = null;
+  render();
+});
+
+$('#signup-back-btn').addEventListener('click', () => {
+  state.currentMeetingId = null;
+  state.currentMeeting = null;
+  render();
+});
+
+$('#meeting-signup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  let arrivalDate, departureDate;
+  try {
+    arrivalDate = readStayDateField('#signup-arrival', 'Anreise');
+    departureDate = readStayDateField('#signup-departure', 'Abreise');
+    checkStayOrder(arrivalDate, departureDate);
+  } catch (err) {
+    $('#meeting-signup-error').textContent = err.message;
+    return;
+  }
+  const size = $('#signup-size').value;
+  try {
+    await api('/my-family', { method: 'PUT', body: JSON.stringify({ size, arrivalDate, departureDate }) });
+    await checkAuth();
+  } catch (err) {
+    $('#meeting-signup-error').textContent = err.message;
+  }
 });
 
 // ===== Tabs =====
@@ -191,48 +378,117 @@ function switchTab(tab) {
 }
 
 // ===== Root render =====
-function render() {
-  if (state.authed || state.admin) {
-    $('#login-view').classList.add('hidden');
-    $('#main-view').classList.remove('hidden');
-
-    if (state.family) {
-      $('#whoami').textContent = state.family.name + (state.admin ? ' · Admin' : '');
-    } else if (state.admin) {
-      $('#whoami').textContent = 'Admin';
-    }
-
-    if (state.admin) {
-      $('#admin-tab-btn').classList.remove('hidden');
-      $('#add-event-btn').classList.remove('hidden');
-    }
-
-    loadMeeting();
-    loadEvents();
-  } else {
-    $('#login-view').classList.remove('hidden');
-    $('#main-view').classList.add('hidden');
-    $('#login-step').classList.toggle('hidden', state.pendingSetup);
-    $('#account-setup-form').classList.toggle('hidden', !state.pendingSetup);
-    loadPublicMeeting();
-  }
+function hideAllViews() {
+  $('#login-view').classList.add('hidden');
+  $('#meeting-picker-view').classList.add('hidden');
+  $('#meeting-signup-view').classList.add('hidden');
+  $('#main-view').classList.add('hidden');
 }
 
-async function loadMeeting() {
-  state.meeting = await api('/meeting');
-  $('#topbar-title').textContent = state.meeting.title || 'Familientreffen';
-  if (state.meeting.startDate && state.meeting.endDate) {
-    $('#meeting-range-sub').textContent =
-      `${formatDateLong(state.meeting.startDate)} bis ${formatDateLong(state.meeting.endDate)}`;
-  } else {
-    $('#meeting-range-sub').textContent = 'Termin steht noch nicht fest.';
+function render() {
+  if (!(state.authed || state.admin)) {
+    hideAllViews();
+    $('#login-view').classList.remove('hidden');
+    return;
   }
+
+  if (!state.currentMeetingId) {
+    hideAllViews();
+    $('#meeting-picker-view').classList.remove('hidden');
+    loadMeetingPicker();
+    return;
+  }
+
+  // Familie (nicht Admin) muss zuerst An-/Abreise fuer dieses Treffen angeben,
+  // bevor sie sich fuer einzelne Events eintragen kann.
+  if (!state.admin && state.currentMeeting.needsSignup) {
+    hideAllViews();
+    $('#meeting-signup-view').classList.remove('hidden');
+    $('#signup-meeting-title').textContent = 'Meldet euch für „' + state.currentMeeting.title + '“ an';
+    $('#meeting-signup-form').reset();
+    $('#signup-arrival').value = formatDate(state.currentMeeting.startDate);
+    $('#signup-departure').value = formatDate(state.currentMeeting.endDate);
+    $('#meeting-signup-error').textContent = '';
+    return;
+  }
+
+  hideAllViews();
+  $('#main-view').classList.remove('hidden');
+
+  if (state.family) {
+    $('#whoami').textContent = state.family.name + (state.admin ? ' · Admin' : '');
+  } else if (state.admin) {
+    $('#whoami').textContent = 'Admin';
+  }
+
+  if (state.admin) {
+    $('#admin-tab-btn').classList.remove('hidden');
+    $('#add-event-btn').classList.remove('hidden');
+  }
+
+  $('#topbar-title').textContent = state.currentMeeting.title || 'Familientreffen';
+  $('#switch-meeting-btn').textContent = 'Treffen: ' + state.currentMeeting.title;
+  $('#meeting-range-sub').textContent = state.currentMeeting.startDate && state.currentMeeting.endDate
+    ? `${formatDateLong(state.currentMeeting.startDate)} bis ${formatDateLong(state.currentMeeting.endDate)}`
+    : 'Termin steht noch nicht fest.';
+  $('#meeting-location-sub').innerHTML = state.currentMeeting.location
+    ? `<a href="${mapsLink(state.currentMeeting.location)}" target="_blank" rel="noopener">📍 ${escapeHtml(state.currentMeeting.location)}</a>`
+    : '';
+
+  loadEvents();
+  loadFamilies();
+}
+
+// ===== Meeting picker =====
+async function loadMeetingPicker() {
+  $('#picker-admin-btn').classList.toggle('hidden', !state.admin);
+  state.meetings = await api('/meetings');
+  const list = $('#meeting-pick-list');
+  list.innerHTML = '';
+  if (state.meetings.length === 0) {
+    $('#meeting-pick-empty').classList.remove('hidden');
+    return;
+  }
+  $('#meeting-pick-empty').classList.add('hidden');
+  state.meetings.forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'family-row meeting-pick-card';
+    row.innerHTML = `
+      <div>
+        <div class="family-row-name">${escapeHtml(m.title)}</div>
+        <div class="family-row-size">${formatDateLong(m.startDate)} bis ${formatDateLong(m.endDate)}</div>
+        ${m.location ? `<div class="family-row-size">📍 ${escapeHtml(m.location)}</div>` : ''}
+      </div>
+      ${state.admin ? `<span class="status-badge ${m.status}">${STATUS_LABELS[m.status]}</span>` : ''}
+    `;
+    row.addEventListener('click', async () => {
+      const meeting = await api('/select-meeting', { method: 'POST', body: JSON.stringify({ meetingId: m.id }) });
+      state.currentMeetingId = meeting.id;
+      state.currentMeeting = meeting;
+      render();
+    });
+    list.appendChild(row);
+  });
 }
 
 // ===== Events tab =====
 async function loadEvents() {
-  state.events = await api('/events');
-  renderEvents();
+  try {
+    state.events = await api('/events');
+    renderEvents();
+  } catch (err) {
+    handleMeetingError(err);
+  }
+}
+
+function handleMeetingError(err) {
+  if (err.code === 'NO_MEETING_SELECTED') {
+    state.currentMeetingId = null;
+    state.currentMeeting = null;
+    render();
+  } else {
+    alert(err.message);
+  }
 }
 
 function renderEvents() {
@@ -254,6 +510,12 @@ function renderEvents() {
   sorted.forEach(ev => list.appendChild(renderEventCard(ev)));
 }
 
+function formatRegistration(r) {
+  let str = `${r.adults} Erw.`;
+  if (r.children) str += ` + ${r.children} Kind${r.children === 1 ? '' : 'er'}`;
+  return str;
+}
+
 function renderEventCard(ev) {
   const card = document.createElement('div');
   card.className = 'event-card';
@@ -262,7 +524,7 @@ function renderEventCard(ev) {
     ? `${formatDateLong(ev.date)} · ${ev.time} Uhr`
     : formatDateLong(ev.date);
 
-  const totalPeople = ev.registrations.reduce((sum, r) => sum + r.count, 0);
+  const totalPeople = ev.registrations.reduce((sum, r) => sum + r.adults + r.children, 0);
   const myReg = state.family ? ev.registrations.find(r => r.familyId === state.family.id) : null;
 
   card.innerHTML = `
@@ -285,12 +547,12 @@ function renderEventCard(ev) {
           ? '<span class="no-registrations">Noch niemand angemeldet</span>'
           : ev.registrations.map(r => `
               <span class="reg-chip ${state.family && r.familyId === state.family.id ? 'me' : ''}">
-                ${escapeHtml(r.familyName)} · ${r.count}
+                ${escapeHtml(r.familyName)} · ${formatRegistration(r)}
               </span>`).join('')}
       </div>
       ${state.family ? `
         <button class="register-btn ${myReg ? 'registered' : ''}" data-id="${ev.id}">
-          ${myReg ? `Angemeldet (${myReg.count}) — ändern` : 'Anmelden'}
+          ${myReg ? `Angemeldet (${formatRegistration(myReg)}) — ändern` : 'Anmelden'}
         </button>` : ''}
     </div>
   `;
@@ -311,22 +573,25 @@ const registerModal = $('#register-modal');
 function openRegisterModal(ev, myReg) {
   $('#register-event-id').value = ev.id;
   $('#register-event-title').textContent = ev.title;
-  $('#register-count').value = myReg ? myReg.count : (state.family ? state.family.size : 1);
+  const mine = state.families.find(f => f.id === state.family.id);
+  $('#register-adults').value = myReg ? myReg.adults : (mine ? mine.size : 1);
+  $('#register-children').value = myReg ? myReg.children : 0;
   $('#register-error').textContent = '';
   $('#unregister-btn').classList.toggle('hidden', !myReg);
   registerModal.classList.remove('hidden');
-  $('#register-count').focus();
+  $('#register-adults').focus();
 }
 
 $('#cancel-register-btn').addEventListener('click', () => registerModal.classList.add('hidden'));
 
-$('#register-form').addEventListener('submit', async (e) => {
+$('#event-register-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const id = $('#register-event-id').value;
-  const count = $('#register-count').value;
+  const adults = $('#register-adults').value;
+  const children = $('#register-children').value;
   $('#register-error').textContent = '';
   try {
-    await api(`/events/${id}/register`, { method: 'POST', body: JSON.stringify({ count }) });
+    await api(`/events/${id}/register`, { method: 'POST', body: JSON.stringify({ adults, children }) });
     registerModal.classList.add('hidden');
     await loadEvents();
   } catch (err) {
@@ -366,7 +631,7 @@ function openEventModal(ev) {
   } else {
     $('#event-modal-title').textContent = 'Neuer Programmpunkt';
     $('#event-id').value = '';
-    if (state.meeting && state.meeting.startDate) $('#event-date').value = formatDate(state.meeting.startDate);
+    if (state.currentMeeting && state.currentMeeting.startDate) $('#event-date').value = formatDate(state.currentMeeting.startDate);
     $('#delete-event-btn').classList.add('hidden');
   }
   eventModal.classList.remove('hidden');
@@ -376,9 +641,10 @@ $('#event-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const id = $('#event-id').value;
   $('#event-error').textContent = '';
-  let datePayload;
+  let datePayload, timePayload;
   try {
-    datePayload = readDateField('#event-date', 'Datum');
+    datePayload = readEventDateField('#event-date', 'Datum');
+    timePayload = readTimeField('#event-time', 'Uhrzeit');
   } catch (err) {
     $('#event-error').textContent = err.message;
     return;
@@ -386,7 +652,7 @@ $('#event-form').addEventListener('submit', async (e) => {
   const payload = {
     title: $('#event-title').value,
     date: datePayload,
-    time: $('#event-time').value,
+    time: timePayload,
     location: $('#event-location').value,
     description: $('#event-description').value,
   };
@@ -416,15 +682,24 @@ $('#delete-event-btn').addEventListener('click', async () => {
 });
 
 // ===== Families tab =====
-async function loadFamiliesTab() {
-  state.families = await api('/families');
-  renderFamiliesTab();
-
-  if (state.family) {
-    $('#my-family-card').classList.remove('hidden');
-    $('#my-arrival').value = formatDate(state.family.arrivalDate);
-    $('#my-departure').value = formatDate(state.family.departureDate);
+async function loadFamilies() {
+  try {
+    state.families = await api('/families');
+    renderFamiliesTab();
+    if (state.family) {
+      $('#my-family-card').classList.remove('hidden');
+      const mine = state.families.find(f => f.id === state.family.id);
+      $('#my-size').value = mine ? mine.size : '';
+      $('#my-arrival').value = formatDate(mine && mine.arrivalDate ? mine.arrivalDate : state.currentMeeting.startDate);
+      $('#my-departure').value = formatDate(mine && mine.departureDate ? mine.departureDate : state.currentMeeting.endDate);
+    }
+  } catch (err) {
+    handleMeetingError(err);
   }
+}
+
+async function loadFamiliesTab() {
+  await loadFamilies();
 }
 
 function renderFamiliesTab() {
@@ -455,7 +730,11 @@ function renderFamiliesTab() {
         <div class="family-row-size">${f.size} ${f.size === 1 ? 'Person' : 'Personen'}</div>
       </div>
       <div class="family-row-dates">${dates}</div>
+      ${state.admin ? `<button class="event-edit-btn" data-id="${f.id}">Bearbeiten</button>` : ''}
     `;
+    if (state.admin) {
+      row.querySelector('.event-edit-btn').addEventListener('click', () => openParticipantModal(f));
+    }
     list.appendChild(row);
   });
 }
@@ -464,99 +743,237 @@ $('#my-family-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   let arrivalDate, departureDate;
   try {
-    arrivalDate = readDateField('#my-arrival', 'Anreise');
-    departureDate = readDateField('#my-departure', 'Abreise');
+    arrivalDate = readStayDateField('#my-arrival', 'Anreise');
+    departureDate = readStayDateField('#my-departure', 'Abreise');
+    checkStayOrder(arrivalDate, departureDate);
   } catch (err) {
     alert(err.message);
     return;
   }
+  const size = $('#my-size').value;
   try {
-    const updated = await api('/my-family', { method: 'PUT', body: JSON.stringify({ arrivalDate, departureDate }) });
-    state.family.arrivalDate = updated.arrivalDate;
-    state.family.departureDate = updated.departureDate;
+    await api('/my-family', { method: 'PUT', body: JSON.stringify({ size, arrivalDate, departureDate }) });
     $('#my-family-saved').classList.remove('hidden');
     setTimeout(() => $('#my-family-saved').classList.add('hidden'), 2000);
-    await loadFamiliesTab();
+    await loadFamilies();
   } catch (err) {
     alert(err.message);
   }
 });
 
+// ===== Participant modal (admin) =====
+const participantModal = $('#participant-modal');
+
+function openParticipantModal(f) {
+  $('#participant-error').textContent = '';
+  $('#participant-family-id').value = f.id;
+  $('#participant-modal-title').textContent = escapeHtml(f.name) + ' bearbeiten';
+  $('#participant-size').value = f.size || 1;
+  $('#participant-arrival').value = formatDate(f.arrivalDate || state.currentMeeting.startDate);
+  $('#participant-departure').value = formatDate(f.departureDate || state.currentMeeting.endDate);
+  participantModal.classList.remove('hidden');
+}
+
+$('#cancel-participant-modal-btn').addEventListener('click', () => participantModal.classList.add('hidden'));
+
+$('#participant-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const familyId = $('#participant-family-id').value;
+  let arrivalDate, departureDate;
+  try {
+    arrivalDate = readStayDateField('#participant-arrival', 'Anreise');
+    departureDate = readStayDateField('#participant-departure', 'Abreise');
+    checkStayOrder(arrivalDate, departureDate);
+  } catch (err) {
+    $('#participant-error').textContent = err.message;
+    return;
+  }
+  const size = $('#participant-size').value;
+  try {
+    await api(`/admin/participants/${familyId}`, { method: 'PUT', body: JSON.stringify({ size, arrivalDate, departureDate }) });
+    participantModal.classList.add('hidden');
+    await loadFamilies();
+  } catch (err) {
+    $('#participant-error').textContent = err.message;
+  }
+});
+
 // ===== Admin tab =====
 async function loadAdminTab() {
-  if (state.meeting) {
-    $('#meeting-title-input').value = state.meeting.title || '';
-    $('#meeting-start').value = formatDate(state.meeting.startDate);
-    $('#meeting-end').value = formatDate(state.meeting.endDate);
-  }
-  const families = await api('/admin/families');
-  state.adminFamilies = families;
+  state.adminMeetings = await api('/admin/meetings');
+  renderAdminMeetings();
+  state.adminFamilies = await api('/admin/families');
   renderAdminFamilies();
+}
+
+// ----- Meeting management -----
+function getMeetingFilterRange() {
+  const from = parseDisplayDate($('#meeting-filter-from').value);
+  const to = parseDisplayDate($('#meeting-filter-to').value);
+  return { from: from || '', to: to || '' };
+}
+
+['#meeting-filter-from', '#meeting-filter-to'].forEach(sel => {
+  $(sel).addEventListener('input', renderAdminMeetings);
+});
+
+$('#meeting-filter-clear').addEventListener('click', () => {
+  $('#meeting-filter-from').value = '';
+  $('#meeting-filter-to').value = '';
+  renderAdminMeetings();
+});
+
+function renderAdminMeetings() {
+  const list = $('#admin-meetings-list');
+  list.innerHTML = '';
+  const { from, to } = getMeetingFilterRange();
+  const filtered = [...state.adminMeetings]
+    .filter(m => (!from || m.startDate >= from) && (!to || m.startDate <= to))
+    .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty-state"><p>Keine Treffen gefunden.</p></div>';
+    return;
+  }
+
+  filtered.forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'admin-meeting-row';
+    row.innerHTML = `
+      <div class="admin-family-info">
+        <span class="admin-family-name">${escapeHtml(m.title)}</span>
+        <span class="admin-family-meta">${formatDate(m.startDate)} → ${formatDate(m.endDate)} · ${m.participantCount} Familien · ${m.eventCount} Programmpunkte</span>
+        ${m.location ? `<span class="admin-family-meta">📍 ${escapeHtml(m.location)}</span>` : ''}
+      </div>
+      <span class="status-badge ${m.status}">${STATUS_LABELS[m.status]}</span>
+      <div class="admin-family-actions">
+        <button data-action="edit">Bearbeiten</button>
+        <button data-action="delete">Löschen</button>
+      </div>
+    `;
+    row.querySelector('[data-action="edit"]').addEventListener('click', () => openMeetingModal(m));
+    row.querySelector('[data-action="delete"]').addEventListener('click', () => deleteMeeting(m));
+    list.appendChild(row);
+  });
+}
+
+const meetingModal = $('#meeting-modal');
+
+$('#add-meeting-btn').addEventListener('click', () => openMeetingModal(null));
+$('#cancel-meeting-modal-btn').addEventListener('click', () => meetingModal.classList.add('hidden'));
+
+function openMeetingModal(m) {
+  $('#meeting-error').textContent = '';
+  $('#meeting-form').reset();
+  if (m) {
+    $('#meeting-modal-title').textContent = 'Treffen bearbeiten';
+    $('#meeting-id').value = m.id;
+    $('#meeting-title-input').value = m.title;
+    $('#meeting-start').value = formatDate(m.startDate);
+    $('#meeting-end').value = formatDate(m.endDate);
+    $('#meeting-location').value = m.location || '';
+    $('#meeting-status-input').value = m.manualStatus;
+    $('#meeting-status-field').classList.toggle('hidden', m.status === 'past');
+    $('#delete-meeting-btn').classList.remove('hidden');
+  } else {
+    $('#meeting-modal-title').textContent = 'Neues Treffen';
+    $('#meeting-id').value = '';
+    $('#meeting-status-input').value = 'active';
+    $('#meeting-status-field').classList.remove('hidden');
+    $('#delete-meeting-btn').classList.add('hidden');
+  }
+  meetingModal.classList.remove('hidden');
 }
 
 $('#meeting-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  $('#meeting-error').textContent = '';
+  const id = $('#meeting-id').value;
   let startDate, endDate;
   try {
     startDate = readDateField('#meeting-start', 'Start');
     endDate = readDateField('#meeting-end', 'Ende');
+    if (startDate > endDate) {
+      throw new Error('Startdatum muss vor oder gleich dem Enddatum liegen');
+    }
   } catch (err) {
-    alert(err.message);
+    $('#meeting-error').textContent = err.message;
     return;
   }
   const payload = {
     title: $('#meeting-title-input').value,
     startDate,
     endDate,
+    location: $('#meeting-location').value,
+    manualStatus: $('#meeting-status-input').value,
   };
   try {
-    state.meeting = await api('/meeting', { method: 'PUT', body: JSON.stringify(payload) });
-    $('#topbar-title').textContent = state.meeting.title;
-    $('#meeting-saved').classList.remove('hidden');
-    setTimeout(() => $('#meeting-saved').classList.add('hidden'), 2000);
-    $('#meeting-range-sub').textContent = state.meeting.startDate && state.meeting.endDate
-      ? `${formatDateLong(state.meeting.startDate)} bis ${formatDateLong(state.meeting.endDate)}`
-      : 'Termin steht noch nicht fest.';
+    if (id) {
+      await api(`/admin/meetings/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    } else {
+      await api('/admin/meetings', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    meetingModal.classList.add('hidden');
+    await loadAdminTab();
   } catch (err) {
-    alert(err.message);
+    $('#meeting-error').textContent = err.message;
   }
 });
 
+$('#delete-meeting-btn').addEventListener('click', async () => {
+  const id = $('#meeting-id').value;
+  if (!confirm('Dieses Treffen wirklich löschen? Alle Programmpunkte und Anmeldungen darin gehen verloren.')) return;
+  try {
+    await api(`/admin/meetings/${id}`, { method: 'DELETE' });
+    meetingModal.classList.add('hidden');
+    await loadAdminTab();
+  } catch (err) {
+    $('#meeting-error').textContent = err.message;
+  }
+});
+
+async function deleteMeeting(m) {
+  if (!confirm(`Treffen "${m.title}" wirklich löschen? Alle Programmpunkte und Anmeldungen darin gehen verloren.`)) return;
+  try {
+    await api(`/admin/meetings/${m.id}`, { method: 'DELETE' });
+    await loadAdminTab();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// ----- Familien (global) -----
 function renderAdminFamilies() {
   const list = $('#admin-families-list');
   list.innerHTML = '';
+  if (state.adminFamilies.length === 0) {
+    list.innerHTML = '<div class="empty-state"><p>Noch keine Familien registriert.</p></div>';
+    return;
+  }
   state.adminFamilies.forEach(f => {
     const row = document.createElement('div');
     row.className = 'admin-family-row';
-    const dates = (f.arrivalDate || f.departureDate)
-      ? `${f.arrivalDate ? formatDate(f.arrivalDate) : '?'} → ${f.departureDate ? formatDate(f.departureDate) : '?'}`
-      : 'Termin offen';
     const accountInfo = f.account
       ? `Account: <strong>${escapeHtml(f.account.username)}</strong>`
-      : '<span class="no-dates">Noch kein Account</span>';
+      : '<span class="no-dates">Kein Account</span>';
     row.innerHTML = `
       <div class="admin-family-info">
         <span class="admin-family-name">${escapeHtml(f.name)}</span>
-        <span class="admin-family-meta">${f.size} ${f.size === 1 ? 'Person' : 'Personen'} · ${dates}</span>
         <span class="admin-family-meta">${accountInfo}</span>
       </div>
-      <span class="admin-family-code">${f.token}</span>
       <div class="admin-family-actions">
-        <button data-action="edit" data-id="${f.id}">Bearbeiten</button>
-        ${f.account ? `<button data-action="reset-account" data-id="${f.id}">Account zurücksetzen</button>` : ''}
-        <button data-action="delete" data-id="${f.id}">Löschen</button>
+        <button data-action="set-password">Passwort setzen</button>
+        <button data-action="delete">Löschen</button>
       </div>
     `;
-    row.querySelector('[data-action="edit"]').addEventListener('click', () => openFamilyModal(f));
+    row.querySelector('[data-action="set-password"]').addEventListener('click', () => openSetPasswordModal(f));
     row.querySelector('[data-action="delete"]').addEventListener('click', () => deleteFamily(f));
-    const resetBtn = row.querySelector('[data-action="reset-account"]');
-    if (resetBtn) resetBtn.addEventListener('click', () => resetFamilyAccount(f));
     list.appendChild(row);
   });
 }
 
 async function deleteFamily(f) {
-  if (!confirm(`Familie "${f.name}" wirklich löschen? Alle Anmeldungen dieser Familie zu Events werden ebenfalls entfernt.`)) return;
+  if (!confirm(`Familie "${f.name}" wirklich löschen? Alle Anmeldungen dieser Familie in allen Treffen werden ebenfalls entfernt.`)) return;
   try {
     await api(`/admin/families/${f.id}`, { method: 'DELETE' });
     await loadAdminTab();
@@ -565,81 +982,27 @@ async function deleteFamily(f) {
   }
 }
 
-async function resetFamilyAccount(f) {
-  if (!confirm(`Account von Familie "${f.name}" wirklich zurücksetzen? Benutzername/Passwort werden gelöscht, der Familien-Token bleibt gültig und kann für einen neuen Account genutzt werden.`)) return;
-  try {
-    await api(`/admin/families/${f.id}/reset-account`, { method: 'POST' });
-    await loadAdminTab();
-  } catch (err) {
-    alert(err.message);
-  }
+const setPasswordModal = $('#set-password-modal');
+
+function openSetPasswordModal(f) {
+  $('#set-password-error').textContent = '';
+  $('#set-password-form').reset();
+  $('#set-password-family-id').value = f.id;
+  setPasswordModal.classList.remove('hidden');
 }
 
-// ===== Family modal (admin) =====
-const familyModal = $('#family-modal');
+$('#cancel-set-password-modal-btn').addEventListener('click', () => setPasswordModal.classList.add('hidden'));
 
-$('#add-family-btn').addEventListener('click', () => openFamilyModal(null));
-$('#cancel-family-modal-btn').addEventListener('click', () => familyModal.classList.add('hidden'));
-
-function openFamilyModal(f) {
-  $('#family-error').textContent = '';
-  $('#family-form').reset();
-  if (f) {
-    $('#family-modal-title').textContent = 'Familie bearbeiten';
-    $('#family-id').value = f.id;
-    $('#family-name').value = f.name;
-    $('#family-size').value = f.size;
-    $('#family-arrival').value = formatDate(f.arrivalDate);
-    $('#family-departure').value = formatDate(f.departureDate);
-    $('#delete-family-btn').classList.remove('hidden');
-  } else {
-    $('#family-modal-title').textContent = 'Neue Familie';
-    $('#family-id').value = '';
-    $('#delete-family-btn').classList.add('hidden');
-  }
-  familyModal.classList.remove('hidden');
-}
-
-$('#family-form').addEventListener('submit', async (e) => {
+$('#set-password-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const id = $('#family-id').value;
-  let arrivalDate, departureDate;
+  const id = $('#set-password-family-id').value;
+  const password = $('#set-password-value').value;
+  $('#set-password-error').textContent = '';
   try {
-    arrivalDate = readDateField('#family-arrival', 'Anreise');
-    departureDate = readDateField('#family-departure', 'Abreise');
+    await api(`/admin/families/${id}/set-password`, { method: 'POST', body: JSON.stringify({ password }) });
+    setPasswordModal.classList.add('hidden');
   } catch (err) {
-    $('#family-error').textContent = err.message;
-    return;
-  }
-  const payload = {
-    name: $('#family-name').value,
-    size: $('#family-size').value,
-    arrivalDate,
-    departureDate,
-  };
-  try {
-    if (id) {
-      await api(`/admin/families/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
-    } else {
-      await api('/admin/families', { method: 'POST', body: JSON.stringify(payload) });
-    }
-    familyModal.classList.add('hidden');
-    await loadAdminTab();
-  } catch (err) {
-    $('#family-error').textContent = err.message;
-  }
-});
-
-$('#delete-family-btn').addEventListener('click', async () => {
-  const id = $('#family-id').value;
-  const f = state.adminFamilies.find(x => x.id === id);
-  if (!confirm(`Familie "${f.name}" wirklich löschen?`)) return;
-  try {
-    await api(`/admin/families/${id}`, { method: 'DELETE' });
-    familyModal.classList.add('hidden');
-    await loadAdminTab();
-  } catch (err) {
-    $('#family-error').textContent = err.message;
+    $('#set-password-error').textContent = err.message;
   }
 });
 

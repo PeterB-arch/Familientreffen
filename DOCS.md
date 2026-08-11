@@ -9,7 +9,8 @@ Zeitplan- und Anmelde-Tool fuer euer Familienfest, jetzt als Home-Assistant-Add-
    Unterordners).
 2. Store neu laden, das Add-on **"Familienfest-Planer"** erscheint in der Liste.
 3. Installieren, danach im **Konfiguration**-Tab die drei Werte anpassen:
-   - `family_code` – der Code, den alle Familienmitglieder zum Einloggen bekommen
+   - `family_token` – der Token, mit dem sich jedes Familienmitglied einmalig
+     einen eigenen Account (Benutzername + Passwort) anlegt
    - `admin_code` – dein persoenlicher Admin-Code (nicht weitergeben!)
    - `session_secret` – irgendein zufaelliger, langer Text (einmalig festlegen,
      danach nie mehr aendern, sonst werden alle Sessions ungueltig)
@@ -24,7 +25,7 @@ Damit Familienmitglieder ohne HA-Account trotzdem teilnehmen koennen, ist das
 Add-on zusaetzlich ganz normal auf Port `3000` erreichbar – genau wie vorher
 per Docker-Compose. Richte dafuer wie gehabt einen Reverse Proxy oder eine
 DDNS-Adresse auf `<NAS-IP>:3000` ein und gib diesen Link an die Familie weiter,
-zusammen mit dem `family_code`.
+zusammen mit dem `family_token` zur einmaligen Registrierung.
 
 ## Daten & Backups
 

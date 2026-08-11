@@ -16,6 +16,7 @@ if (fs.existsSync(HA_OPTIONS_FILE)) {
   try {
     const opts = JSON.parse(fs.readFileSync(HA_OPTIONS_FILE, 'utf8'));
     if (opts.admin_code) process.env.ADMIN_CODE = opts.admin_code;
+    if (opts.family_token) process.env.FAMILY_TOKEN = opts.family_token;
     if (opts.session_secret) process.env.SESSION_SECRET = opts.session_secret;
   } catch (err) {
     console.error('Konnte /data/options.json nicht lesen:', err.message);
@@ -32,6 +33,7 @@ const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 // --- Konfiguration ueber Umgebungsvariablen (mit Standardwerten) ---
 const ADMIN_CODE = process.env.ADMIN_CODE || 'admin2026';
+const FAMILY_TOKEN = process.env.FAMILY_TOKEN || 'familie2026';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 // Direkter Port (z. B. fuer Familie von unterwegs, ohne HA-Login) und,
@@ -50,38 +52,67 @@ app.use(cookieSession({
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    const initial = {
-      meeting: { title: '', startDate: '', endDate: '' },
-      families: [],
-      events: []
-    };
+    const initial = { families: [], meetings: [] };
     fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
     return initial;
   }
   const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  if (!data.meeting) data.meeting = { title: '', startDate: '', endDate: '' };
+
+  // Migration: aeltere Daten kannten nur ein einzelnes globales "meeting"
+  // plus flache "events" - daraus wird der erste Eintrag in "meetings".
+  if (data.meeting && !data.meetings) {
+    data.meetings = [{
+      id: crypto.randomUUID(),
+      title: data.meeting.title || '',
+      startDate: data.meeting.startDate || '',
+      endDate: data.meeting.endDate || '',
+      manualStatus: 'active',
+      participants: (data.families || []).map(f => ({
+        familyId: f.id,
+        size: f.size || 1,
+        arrivalDate: f.arrivalDate || '',
+        departureDate: f.departureDate || ''
+      })),
+      events: data.events || []
+    }];
+    delete data.meeting;
+    delete data.events;
+  }
+  if (!data.meetings) data.meetings = [];
   if (!data.families) data.families = [];
-  if (!data.events) data.events = [];
-  // Migration: aeltere Daten kannten nur "code" (Login-Code ohne Account).
-  data.families.forEach(f => {
-    if (!f.token && f.code) f.token = f.code;
-    if (f.account === undefined) f.account = null;
+  data.meetings.forEach(m => {
+    if (m.location === undefined) m.location = '';
   });
+
+  // Migration: Familien-Tokens/-eigene Groesse & Termine gibt es nicht mehr -
+  // diese Infos leben jetzt pro Treffen in meeting.participants.
+  data.families.forEach(f => {
+    delete f.token;
+    delete f.code;
+    delete f.size;
+    delete f.arrivalDate;
+    delete f.departureDate;
+  });
+
+  // Migration: Event-Anmeldungen kannten frueher nur eine einzelne "count" -
+  // jetzt getrennt nach Erwachsenen/Kindern (alte Anzahl wird als Erwachsene uebernommen).
+  data.meetings.forEach(m => {
+    m.events.forEach(ev => {
+      ev.registrations.forEach(r => {
+        if (r.adults === undefined) {
+          r.adults = r.count || 0;
+          r.children = 0;
+          delete r.count;
+        }
+      });
+    });
+  });
+
   return data;
 }
 
 function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-// --- Familien-Token ---
-const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // ohne 0/O/1/I zur besseren Lesbarkeit
-function generateFamilyToken(existingTokens) {
-  let token;
-  do {
-    token = Array.from({ length: 6 }, () => TOKEN_CHARS[crypto.randomInt(TOKEN_CHARS.length)]).join('');
-  } while (existingTokens.includes(token));
-  return token;
 }
 
 // --- Passwort-Hashing (Node-eigenes scrypt, keine zusaetzliche Abhaengigkeit) ---
@@ -98,26 +129,102 @@ function verifyPassword(password, salt, hash) {
   return crypto.timingSafeEqual(test, stored);
 }
 
-// Sobald ein Account existiert, wird ueberall (Events, "Wer kommt wann?",
-// Topbar) der selbstgewaehlte Accountname statt des von Admin vergebenen
-// Familiennamens angezeigt. Der Admin-Bereich sieht weiterhin beide.
 function displayName(f) {
   return f.account ? f.account.username : f.name;
 }
 
 function publicFamily(f) {
-  return { id: f.id, name: displayName(f), size: f.size, arrivalDate: f.arrivalDate, departureDate: f.departureDate };
+  return { id: f.id, name: displayName(f) };
 }
 
 function adminFamily(f) {
   return {
     id: f.id,
     name: f.name,
-    token: f.token,
-    size: f.size,
-    arrivalDate: f.arrivalDate,
-    departureDate: f.departureDate,
     account: f.account ? { username: f.account.username } : null
+  };
+}
+
+// --- Datumslogik (An-/Abreise-Fenster, Event-Zeitraum) ---
+function fmtDate(iso) {
+  if (!iso) return '';
+  const [y, mo, d] = iso.split('-');
+  return `${d}.${mo}.${y}`;
+}
+
+function addDays(iso, days) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// An-/Abreise duerfen hoechstens 7 Tage vor bzw. nach dem Treffen liegen.
+function validateStayDate(dateStr, meeting, label) {
+  if (!dateStr) return null;
+  const min = addDays(meeting.startDate, -7);
+  const max = addDays(meeting.endDate, 7);
+  if (dateStr < min || dateStr > max) {
+    return `${label} muss zwischen ${fmtDate(min)} und ${fmtDate(max)} liegen (max. 7 Tage vor/nach dem Treffen)`;
+  }
+  return null;
+}
+
+// Anreise darf nicht nach der Abreise liegen (Gleichstand = ein Tag = erlaubt).
+function validateStayOrder(arrivalDate, departureDate) {
+  if (arrivalDate && departureDate && arrivalDate > departureDate) {
+    return 'Anreise muss vor oder gleich der Abreise liegen';
+  }
+  return null;
+}
+
+// Events muessen immer innerhalb des Treffen-Zeitraums liegen.
+function validateEventDate(dateStr, meeting) {
+  if (dateStr < meeting.startDate || dateStr > meeting.endDate) {
+    return `Datum muss zwischen ${fmtDate(meeting.startDate)} und ${fmtDate(meeting.endDate)} liegen (Zeitraum des Treffens)`;
+  }
+  return null;
+}
+
+// Status wird nie gespeichert, sondern immer live berechnet: ein Enddatum in
+// der Vergangenheit ueberstimmt den manuellen Aktiv/Inaktiv-Schalter.
+function meetingStatus(m) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (m.endDate && m.endDate < today) return 'past';
+  return m.manualStatus === 'inactive' ? 'inactive' : 'active';
+}
+
+// Solange eine Familie noch keinen Teilnehmer-Eintrag (An-/Abreise) fuer
+// dieses Treffen hat, muss sie das zuerst nachholen, bevor sie sich fuer
+// einzelne Events eintragen kann.
+function needsSignup(m, req) {
+  const familyId = req.session && req.session.familyId;
+  if (!familyId) return false;
+  return !m.participants.some(p => p.familyId === familyId);
+}
+
+function publicMeeting(m, req) {
+  return {
+    id: m.id,
+    title: m.title,
+    startDate: m.startDate,
+    endDate: m.endDate,
+    location: m.location || '',
+    status: meetingStatus(m),
+    needsSignup: needsSignup(m, req)
+  };
+}
+
+function adminMeeting(m) {
+  return {
+    id: m.id,
+    title: m.title,
+    startDate: m.startDate,
+    endDate: m.endDate,
+    location: m.location || '',
+    manualStatus: m.manualStatus,
+    status: meetingStatus(m),
+    participantCount: m.participants.length,
+    eventCount: m.events.length
   };
 }
 
@@ -126,7 +233,12 @@ function enrichEvent(ev, families) {
     ...ev,
     registrations: ev.registrations.map(r => {
       const fam = families.find(f => f.id === r.familyId);
-      return { familyId: r.familyId, familyName: fam ? displayName(fam) : '(gelöscht)', count: r.count };
+      return {
+        familyId: r.familyId,
+        familyName: fam ? displayName(fam) : '(gelöscht)',
+        adults: r.adults,
+        children: r.children
+      };
     })
   };
 }
@@ -146,48 +258,41 @@ function requireAdmin(req, res, next) {
   return res.status(401).json({ error: 'Kein Admin-Zugriff' });
 }
 
+// Muss NACH requireAuth/requireAdmin verwendet werden. Laedt das aktuell
+// gewaehlte Treffen (session.currentMeetingId) und haengt es fuer die
+// nachfolgenden Handler an req an. Ein Statuswechsel wirkt bewusst nicht
+// rueckwirkend auf eine bereits laufende Session (siehe Plan).
+function requireMeeting(req, res, next) {
+  const id = req.session && req.session.currentMeetingId;
+  const data = loadData();
+  const meeting = id && data.meetings.find(m => m.id === id);
+  if (!meeting) {
+    return res.status(409).json({ error: 'Kein Treffen ausgewählt oder Treffen existiert nicht mehr', code: 'NO_MEETING_SELECTED' });
+  }
+  req.currentMeeting = meeting;
+  req.currentData = data;
+  next();
+}
+
 // --- Auth Routen ---
-// Login per Familien-Token: Falls die Familie noch keinen Account hat, wird
-// eine "pending"-Session gestartet, in der ein Account (Benutzername +
-// Passwort) angelegt werden muss. Hat die Familie schon einen Account, loggt
-// der Token direkt ein (bleibt dauerhaft als Zugang/Recovery-Weg gueltig).
-app.post('/api/login', (req, res) => {
-  const { token } = req.body;
-  if (!token || !token.trim()) {
-    return res.status(400).json({ error: 'Bitte Familien-Token angeben' });
+// Selbstregistrierung: Der (fuer die ganze App einzige) Token gilt nur fuer
+// diesen einmaligen Schritt. Familie, Benutzername und Passwort werden in
+// einem Zug angelegt - danach laeuft der Login nur noch ueber Account.
+app.post('/api/register', (req, res) => {
+  const { token, name, username, password } = req.body;
+  if (!token || token.trim().toUpperCase() !== FAMILY_TOKEN.toUpperCase()) {
+    return res.status(401).json({ error: 'Falscher Token' });
   }
-  const data = loadData();
-  const family = data.families.find(f => f.token === token.trim().toUpperCase());
-  if (!family) {
-    return res.status(401).json({ error: 'Falscher Familien-Token' });
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Bitte Familiennamen angeben' });
   }
-  if (!family.account) {
-    req.session.pendingFamilyId = family.id;
-    return res.json({ success: true, needsSetup: true });
-  }
-  req.session.familyId = family.id;
-  res.json({ success: true, needsSetup: false, family: publicFamily(family) });
-});
-
-// Account anlegen: nur moeglich direkt nach einem gueltigen Token-Login
-// (req.session.pendingFamilyId), damit niemand ohne Token einen Account
-// fuer eine fremde Familie erstellen kann.
-app.post('/api/create-account', (req, res) => {
-  if (!req.session || !req.session.pendingFamilyId) {
-    return res.status(400).json({ error: 'Bitte zuerst mit dem Familien-Token anmelden' });
-  }
-  const data = loadData();
-  const family = data.families.find(f => f.id === req.session.pendingFamilyId);
-  if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
-  if (family.account) return res.status(400).json({ error: 'Für diese Familie existiert bereits ein Account' });
-
-  const { username, password } = req.body;
   if (!username || !username.trim() || username.trim().length < 3) {
     return res.status(400).json({ error: 'Benutzername muss mindestens 3 Zeichen haben' });
   }
   if (!password || password.length < 6) {
     return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben' });
   }
+  const data = loadData();
   const uname = username.trim();
   const exists = data.families.some(f => f.account && f.account.username.toLowerCase() === uname.toLowerCase());
   if (exists) {
@@ -195,11 +300,16 @@ app.post('/api/create-account', (req, res) => {
   }
 
   const { salt, hash } = hashPassword(password);
-  family.account = { username: uname, passwordSalt: salt, passwordHash: hash };
+  const family = {
+    id: crypto.randomUUID(),
+    name: name.trim(),
+    account: { username: uname, passwordSalt: salt, passwordHash: hash }
+  };
+  data.families.push(family);
   saveData(data);
 
-  delete req.session.pendingFamilyId;
   req.session.familyId = family.id;
+  req.session.currentMeetingId = null;
   res.json({ success: true, family: publicFamily(family) });
 });
 
@@ -214,6 +324,7 @@ app.post('/api/login-account', (req, res) => {
     return res.status(401).json({ error: 'Benutzername oder Passwort falsch' });
   }
   req.session.familyId = family.id;
+  req.session.currentMeetingId = null;
   res.json({ success: true, family: publicFamily(family) });
 });
 
@@ -234,49 +345,113 @@ app.post('/api/logout', (req, res) => {
 app.get('/api/me', (req, res) => {
   const admin = !!(req.session && req.session.admin);
   let family = null;
+  let currentMeeting = null;
+  const data = loadData();
   if (req.session && req.session.familyId) {
-    const data = loadData();
     const f = data.families.find(x => x.id === req.session.familyId);
     if (f) family = publicFamily(f);
   }
-  let pendingSetup = false;
-  if (!admin && !family && req.session && req.session.pendingFamilyId) {
-    const data = loadData();
-    pendingSetup = data.families.some(f => f.id === req.session.pendingFamilyId);
+  if (req.session && req.session.currentMeetingId) {
+    const m = data.meetings.find(x => x.id === req.session.currentMeetingId);
+    if (m) currentMeeting = publicMeeting(m, req);
   }
-  res.json({ authed: admin || !!family, admin, family, pendingSetup });
+  res.json({ authed: admin || !!family, admin, family, currentMeeting });
 });
 
-// --- Meeting ---
-app.get('/api/meeting', (req, res) => {
+// --- Treffen-Auswahl ---
+app.get('/api/meetings', requireAuth, (req, res) => {
   const data = loadData();
-  res.json(data.meeting);
+  const admin = !!(req.session && req.session.admin);
+  const meetings = data.meetings
+    .filter(m => admin || meetingStatus(m) === 'active')
+    .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''))
+    .map(m => publicMeeting(m, req));
+  res.json(meetings);
 });
 
-app.put('/api/meeting', requireAdmin, (req, res) => {
+app.post('/api/select-meeting', requireAuth, (req, res) => {
   const data = loadData();
-  const { title, startDate, endDate } = req.body;
-  data.meeting = {
-    title: (title || '').trim(),
-    startDate: startDate || '',
-    endDate: endDate || ''
+  const meeting = data.meetings.find(m => m.id === req.body.meetingId);
+  if (!meeting) return res.status(404).json({ error: 'Treffen nicht gefunden' });
+  const admin = !!(req.session && req.session.admin);
+  if (!admin && meetingStatus(meeting) !== 'active') {
+    return res.status(400).json({ error: 'Dieses Treffen ist nicht aktiv' });
+  }
+  req.session.currentMeetingId = meeting.id;
+  res.json(publicMeeting(meeting, req));
+});
+
+// --- Treffen-Verwaltung (Admin) ---
+app.get('/api/admin/meetings', requireAdmin, (req, res) => {
+  const data = loadData();
+  const meetings = [...data.meetings]
+    .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''))
+    .map(adminMeeting);
+  res.json(meetings);
+});
+
+app.post('/api/admin/meetings', requireAdmin, (req, res) => {
+  const data = loadData();
+  const { title, startDate, endDate, location, manualStatus } = req.body;
+  if (!title || !title.trim() || !startDate || !endDate) {
+    return res.status(400).json({ error: 'Titel, Start- und Enddatum sind erforderlich' });
+  }
+  if (startDate > endDate) {
+    return res.status(400).json({ error: 'Startdatum muss vor oder gleich dem Enddatum liegen' });
+  }
+  const meeting = {
+    id: crypto.randomUUID(),
+    title: title.trim(),
+    startDate,
+    endDate,
+    location: location || '',
+    manualStatus: manualStatus === 'inactive' ? 'inactive' : 'active',
+    participants: [],
+    events: []
   };
+  data.meetings.push(meeting);
   saveData(data);
-  res.json(data.meeting);
+  res.json(adminMeeting(meeting));
 });
 
-// --- Events ---
-app.get('/api/events', requireAuth, (req, res) => {
+app.put('/api/admin/meetings/:id', requireAdmin, (req, res) => {
   const data = loadData();
-  res.json(data.events.map(ev => enrichEvent(ev, data.families)));
+  const meeting = data.meetings.find(m => m.id === req.params.id);
+  if (!meeting) return res.status(404).json({ error: 'Nicht gefunden' });
+  const { title, startDate, endDate, location, manualStatus } = req.body;
+  const newStart = startDate !== undefined ? startDate : meeting.startDate;
+  const newEnd = endDate !== undefined ? endDate : meeting.endDate;
+  if (newStart > newEnd) {
+    return res.status(400).json({ error: 'Startdatum muss vor oder gleich dem Enddatum liegen' });
+  }
+  if (title !== undefined) meeting.title = title.trim();
+  meeting.startDate = newStart;
+  meeting.endDate = newEnd;
+  if (location !== undefined) meeting.location = location;
+  if (manualStatus !== undefined) meeting.manualStatus = manualStatus === 'inactive' ? 'inactive' : 'active';
+  saveData(data);
+  res.json(adminMeeting(meeting));
 });
 
-app.post('/api/events', requireAdmin, (req, res) => {
+app.delete('/api/admin/meetings/:id', requireAdmin, (req, res) => {
   const data = loadData();
+  data.meetings = data.meetings.filter(m => m.id !== req.params.id);
+  saveData(data);
+  res.json({ success: true });
+});
+
+// --- Events (treffen-bezogen) ---
+app.get('/api/events', requireAuth, requireMeeting, (req, res) => {
+  res.json(req.currentMeeting.events.map(ev => enrichEvent(ev, req.currentData.families)));
+});
+
+app.post('/api/events', requireAdmin, requireMeeting, (req, res) => {
   const { title, date, time, location, description } = req.body;
   if (!title || !title.trim() || !date) {
     return res.status(400).json({ error: 'Titel und Datum sind erforderlich' });
   }
+  const dateError = validateEventDate(date, req.currentMeeting);
+  if (dateError) return res.status(400).json({ error: dateError });
   const event = {
     id: crypto.randomUUID(),
     title: title.trim(),
@@ -286,117 +461,152 @@ app.post('/api/events', requireAdmin, (req, res) => {
     description: description || '',
     registrations: []
   };
-  data.events.push(event);
-  saveData(data);
-  res.json(enrichEvent(event, data.families));
+  req.currentMeeting.events.push(event);
+  saveData(req.currentData);
+  res.json(enrichEvent(event, req.currentData.families));
 });
 
-app.put('/api/events/:id', requireAdmin, (req, res) => {
-  const data = loadData();
-  const event = data.events.find(e => e.id === req.params.id);
+app.put('/api/events/:id', requireAdmin, requireMeeting, (req, res) => {
+  const event = req.currentMeeting.events.find(e => e.id === req.params.id);
   if (!event) return res.status(404).json({ error: 'Nicht gefunden' });
   const { title, date, time, location, description } = req.body;
+  if (date !== undefined) {
+    const dateError = validateEventDate(date, req.currentMeeting);
+    if (dateError) return res.status(400).json({ error: dateError });
+  }
   if (title !== undefined) event.title = title.trim();
   if (date !== undefined) event.date = date;
   if (time !== undefined) event.time = time;
   if (location !== undefined) event.location = location;
   if (description !== undefined) event.description = description;
-  saveData(data);
-  res.json(enrichEvent(event, data.families));
+  saveData(req.currentData);
+  res.json(enrichEvent(event, req.currentData.families));
 });
 
-app.delete('/api/events/:id', requireAdmin, (req, res) => {
-  const data = loadData();
-  data.events = data.events.filter(e => e.id !== req.params.id);
-  saveData(data);
+app.delete('/api/events/:id', requireAdmin, requireMeeting, (req, res) => {
+  req.currentMeeting.events = req.currentMeeting.events.filter(e => e.id !== req.params.id);
+  saveData(req.currentData);
   res.json({ success: true });
 });
 
-app.post('/api/events/:id/register', requireAuth, (req, res) => {
-  const data = loadData();
-  const event = data.events.find(e => e.id === req.params.id);
+app.post('/api/events/:id/register', requireAuth, requireMeeting, (req, res) => {
+  const event = req.currentMeeting.events.find(e => e.id === req.params.id);
   if (!event) return res.status(404).json({ error: 'Nicht gefunden' });
   if (!req.session.familyId) {
     return res.status(400).json({ error: 'Nur Familien können sich anmelden' });
   }
-  const count = parseInt(req.body.count, 10);
-  if (!count || count < 1) {
-    return res.status(400).json({ error: 'Ungültige Personenzahl' });
+  // Erst wenn die Familie fuer dieses Treffen An-/Abreise hinterlegt hat,
+  // darf sie sich fuer einzelne Events eintragen (siehe requireMeeting/needsSignup).
+  const isParticipant = req.currentMeeting.participants.some(p => p.familyId === req.session.familyId);
+  if (!isParticipant) {
+    return res.status(400).json({ error: 'Bitte zuerst An- und Abreise für das Treffen angeben' });
+  }
+  const adults = parseInt(req.body.adults, 10) || 0;
+  const children = parseInt(req.body.children, 10) || 0;
+  if (adults + children < 1) {
+    return res.status(400).json({ error: 'Mindestens eine Person erforderlich' });
   }
   const existing = event.registrations.find(r => r.familyId === req.session.familyId);
   if (existing) {
-    existing.count = count;
+    existing.adults = adults;
+    existing.children = children;
   } else {
-    event.registrations.push({ familyId: req.session.familyId, count });
+    event.registrations.push({ familyId: req.session.familyId, adults, children });
   }
-  saveData(data);
-  res.json(enrichEvent(event, data.families));
+  saveData(req.currentData);
+  res.json(enrichEvent(event, req.currentData.families));
 });
 
-app.post('/api/events/:id/unregister', requireAuth, (req, res) => {
-  const data = loadData();
-  const event = data.events.find(e => e.id === req.params.id);
+app.post('/api/events/:id/unregister', requireAuth, requireMeeting, (req, res) => {
+  const event = req.currentMeeting.events.find(e => e.id === req.params.id);
   if (!event) return res.status(404).json({ error: 'Nicht gefunden' });
   event.registrations = event.registrations.filter(r => r.familyId !== req.session.familyId);
-  saveData(data);
-  res.json(enrichEvent(event, data.families));
+  saveData(req.currentData);
+  res.json(enrichEvent(event, req.currentData.families));
 });
 
-// --- Familien (oeffentliche Uebersicht: An-/Abreise) ---
-app.get('/api/families', requireAuth, (req, res) => {
-  const data = loadData();
-  res.json(data.families.map(publicFamily));
+// --- Teilnehmer des aktuellen Treffens ("Wer kommt wann?") ---
+app.get('/api/families', requireAuth, requireMeeting, (req, res) => {
+  const list = req.currentMeeting.participants.map(p => {
+    const fam = req.currentData.families.find(f => f.id === p.familyId);
+    return {
+      id: p.familyId,
+      name: fam ? displayName(fam) : '(gelöscht)',
+      size: p.size,
+      arrivalDate: p.arrivalDate,
+      departureDate: p.departureDate
+    };
+  });
+  res.json(list);
 });
 
-app.put('/api/my-family', requireAuth, (req, res) => {
+app.put('/api/my-family', requireAuth, requireMeeting, (req, res) => {
   if (!req.session.familyId) {
     return res.status(400).json({ error: 'Nur Familien können ihre Termine eintragen' });
   }
-  const data = loadData();
-  const family = data.families.find(f => f.id === req.session.familyId);
-  if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
-  const { arrivalDate, departureDate } = req.body;
-  family.arrivalDate = arrivalDate || '';
-  family.departureDate = departureDate || '';
-  saveData(data);
-  res.json(publicFamily(family));
+  const { size, arrivalDate, departureDate } = req.body;
+  const parsedSize = parseInt(size, 10);
+  if (!parsedSize || parsedSize < 1) {
+    return res.status(400).json({ error: 'Ungültige Personenzahl' });
+  }
+  const arrivalError = validateStayDate(arrivalDate, req.currentMeeting, 'Anreise');
+  if (arrivalError) return res.status(400).json({ error: arrivalError });
+  const departureError = validateStayDate(departureDate, req.currentMeeting, 'Abreise');
+  if (departureError) return res.status(400).json({ error: departureError });
+  const orderError = validateStayOrder(arrivalDate, departureDate);
+  if (orderError) return res.status(400).json({ error: orderError });
+  let participant = req.currentMeeting.participants.find(p => p.familyId === req.session.familyId);
+  if (!participant) {
+    participant = { familyId: req.session.familyId, size: parsedSize, arrivalDate: '', departureDate: '' };
+    req.currentMeeting.participants.push(participant);
+  }
+  participant.size = parsedSize;
+  participant.arrivalDate = arrivalDate || '';
+  participant.departureDate = departureDate || '';
+  saveData(req.currentData);
+  const fam = req.currentData.families.find(f => f.id === req.session.familyId);
+  res.json({ id: participant.familyId, name: fam ? displayName(fam) : '', size: participant.size, arrivalDate: participant.arrivalDate, departureDate: participant.departureDate });
 });
 
-// --- Familien-Verwaltung (Admin, inkl. Zugangs-Token) ---
+// Admin: Groesse/An-/Abreise eines Teilnehmers im aktuell gewaehlten Treffen bearbeiten.
+app.put('/api/admin/participants/:familyId', requireAdmin, requireMeeting, (req, res) => {
+  const fam = req.currentData.families.find(f => f.id === req.params.familyId);
+  if (!fam) return res.status(404).json({ error: 'Familie nicht gefunden' });
+  const { size, arrivalDate, departureDate } = req.body;
+  const parsedSize = parseInt(size, 10);
+  if (!parsedSize || parsedSize < 1) {
+    return res.status(400).json({ error: 'Ungültige Personenzahl' });
+  }
+  const arrivalError = validateStayDate(arrivalDate, req.currentMeeting, 'Anreise');
+  if (arrivalError) return res.status(400).json({ error: arrivalError });
+  const departureError = validateStayDate(departureDate, req.currentMeeting, 'Abreise');
+  if (departureError) return res.status(400).json({ error: departureError });
+  const orderError = validateStayOrder(arrivalDate, departureDate);
+  if (orderError) return res.status(400).json({ error: orderError });
+  let participant = req.currentMeeting.participants.find(p => p.familyId === req.params.familyId);
+  if (!participant) {
+    participant = { familyId: req.params.familyId, size: parsedSize, arrivalDate: '', departureDate: '' };
+    req.currentMeeting.participants.push(participant);
+  }
+  participant.size = parsedSize;
+  participant.arrivalDate = arrivalDate || '';
+  participant.departureDate = departureDate || '';
+  saveData(req.currentData);
+  res.json({ id: participant.familyId, name: displayName(fam), size: participant.size, arrivalDate: participant.arrivalDate, departureDate: participant.departureDate });
+});
+
+// --- Familienverwaltung (global, Admin) ---
 app.get('/api/admin/families', requireAdmin, (req, res) => {
   const data = loadData();
   res.json(data.families.map(adminFamily));
-});
-
-app.post('/api/admin/families', requireAdmin, (req, res) => {
-  const data = loadData();
-  const { name, size, arrivalDate, departureDate } = req.body;
-  if (!name || !name.trim() || !size || parseInt(size, 10) < 1) {
-    return res.status(400).json({ error: 'Name und Personenzahl sind erforderlich' });
-  }
-  const family = {
-    id: crypto.randomUUID(),
-    name: name.trim(),
-    token: generateFamilyToken(data.families.map(f => f.token)),
-    size: parseInt(size, 10),
-    arrivalDate: arrivalDate || '',
-    departureDate: departureDate || '',
-    account: null
-  };
-  data.families.push(family);
-  saveData(data);
-  res.json(adminFamily(family));
 });
 
 app.put('/api/admin/families/:id', requireAdmin, (req, res) => {
   const data = loadData();
   const family = data.families.find(f => f.id === req.params.id);
   if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
-  const { name, size, arrivalDate, departureDate } = req.body;
+  const { name } = req.body;
   if (name !== undefined) family.name = name.trim();
-  if (size !== undefined) family.size = parseInt(size, 10) || family.size;
-  if (arrivalDate !== undefined) family.arrivalDate = arrivalDate;
-  if (departureDate !== undefined) family.departureDate = departureDate;
   saveData(data);
   res.json(adminFamily(family));
 });
@@ -404,21 +614,30 @@ app.put('/api/admin/families/:id', requireAdmin, (req, res) => {
 app.delete('/api/admin/families/:id', requireAdmin, (req, res) => {
   const data = loadData();
   data.families = data.families.filter(f => f.id !== req.params.id);
-  data.events.forEach(ev => {
-    ev.registrations = ev.registrations.filter(r => r.familyId !== req.params.id);
+  data.meetings.forEach(m => {
+    m.participants = m.participants.filter(p => p.familyId !== req.params.id);
+    m.events.forEach(ev => {
+      ev.registrations = ev.registrations.filter(r => r.familyId !== req.params.id);
+    });
   });
   saveData(data);
   res.json({ success: true });
 });
 
-// Admin: Account einer Familie zuruecksetzen (z. B. Passwort vergessen und
-// Familie kann/will den Token nicht nutzen) - danach greift beim naechsten
-// Token-Login wieder der Account-Setup-Flow.
-app.post('/api/admin/families/:id/reset-account', requireAdmin, (req, res) => {
+// Admin: neues Passwort fuer eine Familie setzen (Recovery-Weg, da der
+// Token nicht mehr familienspezifisch ist). Benutzername/Historie bleiben.
+app.post('/api/admin/families/:id/set-password', requireAdmin, (req, res) => {
   const data = loadData();
   const family = data.families.find(f => f.id === req.params.id);
   if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
-  family.account = null;
+  if (!family.account) return res.status(400).json({ error: 'Familie hat keinen Account' });
+  const { password } = req.body;
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben' });
+  }
+  const { salt, hash } = hashPassword(password);
+  family.account.passwordSalt = salt;
+  family.account.passwordHash = hash;
   saveData(data);
   res.json(adminFamily(family));
 });
