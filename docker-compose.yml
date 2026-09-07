@@ -1,0 +1,35 @@
+services:
+  familienfest-planer:
+    build: .
+    image: familienfest-planer:latest
+    container_name: familienfest-planer
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    # Werte kommen aus einer lokalen .env-Datei neben dieser Datei (siehe
+    # .env.example) - .env wird nicht eingecheckt (.gitignore). Ohne .env mit
+    # allen drei Werten startet der Server bewusst nicht (siehe server.js).
+    environment:
+      # Nur Startwerte - koennen danach jederzeit in der App selbst unter
+      # Verwaltung > Zugangsdaten geaendert werden (siehe DOCS.md).
+      - ADMIN_CODE=${ADMIN_CODE}
+      - FAMILY_TOKEN=${FAMILY_TOKEN}
+      # WICHTIG: einmalig einen eigenen, langen Zufallstext in .env eintragen
+      # und danach nie mehr aendern - sonst werden bei jedem Container-Neustart
+      # alle Logins ungueltig.
+      - SESSION_SECRET=${SESSION_SECRET}
+    # "command: npm run dev" unten startet den Server per nodemon statt
+    # "node server.js": Aenderungen am Code (server.js, public/) wirken dann
+    # sofort im laufenden Container, ohne "docker-compose up --build" -
+    # moeglich durch den Bind-Mount ".:/app" direkt darunter. Fuer den
+    # Produktivbetrieb einfach die "command"-Zeile entfernen (dann greift
+    # wieder "node server.js" aus dem Dockerfile, ohne Live-Reload).
+    command: npm run dev
+    volumes:
+      # Projektordner live in den Container spiegeln (Live-Reload).
+      - .:/app
+      # node_modules als eigenes Volume, damit der obige Bind-Mount die im
+      # Image installierten (Linux-)Pakete nicht mit dem Host-Ordner ueberschreibt.
+      - /app/node_modules
+      # Daten liegen dauerhaft im "data"-Ordner neben dieser Datei.
+      - ./data:/data

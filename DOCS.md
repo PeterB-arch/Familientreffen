@@ -1,8 +1,34 @@
-# Familienfest-Planer – Home Assistant Add-on
+# Familienfest-Planer
 
-Zeitplan- und Anmelde-Tool fuer euer Familienfest, jetzt als Home-Assistant-Add-on.
+Zeitplan- und Anmelde-Tool fuer euer Familienfest. Laeuft entweder direkt als
+Docker-Container (z. B. auf einer Synology NAS ueber Container Manager) oder
+als Home-Assistant-Add-on.
 
-## Installation
+## Installation auf einer Synology NAS (Docker / Container Manager)
+
+Kein Home Assistant noetig - laeuft eigenstaendig per Docker-Compose.
+
+1. Diesen Repo-Ordner auf die NAS kopieren, z. B. per File Station nach
+   `/docker/familienfest-planer` oder per `git clone` ueber SSH.
+2. `.env.example` nach `.env` kopieren und `ADMIN_CODE`, `FAMILY_TOKEN` sowie
+   `SESSION_SECRET` mit eigenen Werten fuellen (`.env` wird nicht eingecheckt).
+   `SESSION_SECRET` einmalig festlegen und danach nie mehr aendern - sonst
+   werden bei jedem Neustart alle Logins ungueltig. Ohne vollstaendige `.env`
+   startet der Server bewusst nicht. `ADMIN_CODE`/`FAMILY_TOKEN` sind nur
+   Startwerte - beides laesst sich spaeter jederzeit in der App selbst unter
+   **Verwaltung → Zugangsdaten** aendern.
+3. **Container Manager** öffnen → **Projekt** → **Erstellen** → als Pfad den
+   kopierten Ordner auswaehlen (dort wird die `docker-compose.yml`
+   automatisch erkannt) → Build starten.
+4. Nach dem Start ist die App unter `http://<NAS-IP>:3000` erreichbar. Alle
+   Daten liegen dauerhaft im `data`-Unterordner neben der `docker-compose.yml`
+   (per Bind-Mount) - der bleibt auch bei Image-Updates/Neu-Builds erhalten
+   und laesst sich ganz normal per NAS-Backup (Hyper Backup o. ae.) sichern.
+5. Fuer Zugriff von unterwegs: wie bei jedem anderen NAS-Dienst per
+   Reverse-Proxy (Synology-eigener Reverse Proxy oder z. B. Nginx) bzw. QuickConnect/DDNS
+   auf Port `3000` einrichten.
+
+## Installation als Home-Assistant-Add-on
 
 1. In Home Assistant: **Einstellungen → Add-ons → Add-on Store → ⋮ (oben rechts)
    → Repositories** → euer GitHub-Repo eintragen (URL des Repos, nicht des

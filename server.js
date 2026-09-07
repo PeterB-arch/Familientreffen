@@ -1,10 +1,14 @@
 const express = require('express');
 const cookieSession = require('cookie-session');
+const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const app = express();
+// Noetig hinter einem Reverse Proxy (z. B. Synology Reverse Proxy, nginx),
+// damit Express X-Forwarded-* korrekt auswertet (u. a. fuer sichere Cookies).
+app.set('trust proxy', 1);
 
 // --- Home-Assistant-Add-on: Optionen aus /data/options.json laden ---
 // Wenn die App als HA-Add-on laeuft, legt der Supervisor die vom Nutzer im
@@ -31,10 +35,19 @@ if (fs.existsSync(HA_OPTIONS_FILE)) {
 const DATA_DIR = fs.existsSync('/data') ? '/data' : path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
-// --- Konfiguration ueber Umgebungsvariablen (mit Standardwerten) ---
-const ADMIN_CODE = process.env.ADMIN_CODE || 'admin2026';
-const FAMILY_TOKEN = process.env.FAMILY_TOKEN || 'familie2026';
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// --- Konfiguration ueber Umgebungsvariablen (keine Standardwerte mehr - ---
+// --- ein oeffentlich im Quellcode bekannter Default waere kein Geheimnis) ---
+const ADMIN_CODE = process.env.ADMIN_CODE;
+const FAMILY_TOKEN = process.env.FAMILY_TOKEN;
+const SESSION_SECRET = process.env.SESSION_SECRET;
+
+if (!ADMIN_CODE || !FAMILY_TOKEN || !SESSION_SECRET) {
+  console.error(
+    'Fehlende Pflicht-Umgebungsvariablen: ADMIN_CODE, FAMILY_TOKEN und ' +
+    'SESSION_SECRET muessen alle gesetzt sein (z. B. per .env-Datei, siehe .env.example).'
+  );
+  process.exit(1);
+}
 
 // Direkter Port (z. B. fuer Familie von unterwegs, ohne HA-Login) und,
 // falls gesetzt, ein zusaetzlicher Ingress-Port fuer die HA-Sidebar.
@@ -45,8 +58,20 @@ app.use(express.json());
 app.use(cookieSession({
   name: 'ff_session',
   secret: SESSION_SECRET,
-  maxAge: 30 * 24 * 60 * 60 * 1000 // 30 Tage
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 Tage
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax'
 }));
+
+// --- Rate-Limiting gegen Brute-Force auf Login/Registrierung ---
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 Minuten
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Zu viele Versuche, bitte in 15 Minuten erneut versuchen' }
+});
 
 // --- Daten laden/speichern ---
 function loadData() {
@@ -56,7 +81,20 @@ function loadData() {
     fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
     return initial;
   }
-  const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  } catch (err) {
+    const backupFile = `${DATA_FILE}.corrupt-${Date.now()}`;
+    console.error(`data.json ist beschaedigt (${err.message}) - sichere nach ${backupFile} und starte mit leeren Daten neu.`);
+    try {
+      fs.renameSync(DATA_FILE, backupFile);
+    } catch (renameErr) {
+      console.error('Konnte beschaedigte data.json nicht sichern:', renameErr.message);
+    }
+    data = { families: [], meetings: [] };
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  }
 
   // Migration: aeltere Daten kannten nur ein einzelnes globales "meeting"
   // plus flache "events" - daraus wird der erste Eintrag in "meetings".
@@ -112,8 +150,27 @@ function loadData() {
   return data;
 }
 
+// Promise-Queue: haengt jeden Schreibvorgang an den vorherigen an, damit sich
+// ueberlappende Aufrufe nie gegenseitig ueberschreiben. Geschrieben wird
+// atomar ueber eine Temp-Datei + fs.renameSync, damit data.json bei einem
+// Absturz mitten im Schreiben nicht in einem kaputten Zwischenzustand landet.
+let writeQueue = Promise.resolve();
 function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  const payload = JSON.stringify(data, null, 2);
+  writeQueue = writeQueue.then(() => {
+    const tmpFile = `${DATA_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, payload);
+    fs.renameSync(tmpFile, DATA_FILE);
+  }).catch(err => {
+    console.error('Fehler beim Speichern von data.json:', err.message);
+  });
+  return writeQueue;
+}
+
+// Trimmt Namen und begrenzt sie auf 60 Zeichen (Schutz vor uebermaessig
+// langen Eingaben in Familienname/Benutzername).
+function sanitizeName(str) {
+  return (str || '').trim().slice(0, 60);
 }
 
 // Admin-Code/Familien-Token: in der Verwaltung gesetzte Werte (data.settings)
@@ -289,22 +346,23 @@ function requireMeeting(req, res, next) {
 // Selbstregistrierung: Der (fuer die ganze App einzige) Token gilt nur fuer
 // diesen einmaligen Schritt. Familie, Benutzername und Passwort werden in
 // einem Zug angelegt - danach laeuft der Login nur noch ueber Account.
-app.post('/api/register', (req, res) => {
-  const { token, name, username, password } = req.body;
+app.post('/api/register', authLimiter, (req, res) => {
+  const { token, password } = req.body;
+  const cleanName = sanitizeName(req.body.name);
+  const uname = sanitizeName(req.body.username);
   const data = loadData();
   if (!token || token.trim().toUpperCase() !== getFamilyToken(data).toUpperCase()) {
     return res.status(401).json({ error: 'Falscher Token' });
   }
-  if (!name || !name.trim()) {
+  if (!cleanName) {
     return res.status(400).json({ error: 'Bitte Familiennamen angeben' });
   }
-  if (!username || !username.trim() || username.trim().length < 3) {
+  if (uname.length < 3) {
     return res.status(400).json({ error: 'Benutzername muss mindestens 3 Zeichen haben' });
   }
   if (!password || password.length < 6) {
     return res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben' });
   }
-  const uname = username.trim();
   const exists = data.families.some(f => f.account && f.account.username.toLowerCase() === uname.toLowerCase());
   if (exists) {
     return res.status(400).json({ error: 'Benutzername ist bereits vergeben' });
@@ -313,7 +371,7 @@ app.post('/api/register', (req, res) => {
   const { salt, hash } = hashPassword(password);
   const family = {
     id: crypto.randomUUID(),
-    name: name.trim(),
+    name: cleanName,
     account: { username: uname, passwordSalt: salt, passwordHash: hash }
   };
   data.families.push(family);
@@ -324,7 +382,7 @@ app.post('/api/register', (req, res) => {
   res.json({ success: true, family: publicFamily(family) });
 });
 
-app.post('/api/login-account', (req, res) => {
+app.post('/api/login-account', authLimiter, (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Benutzername und Passwort erforderlich' });
@@ -339,7 +397,7 @@ app.post('/api/login-account', (req, res) => {
   res.json({ success: true, family: publicFamily(family) });
 });
 
-app.post('/api/admin-login', (req, res) => {
+app.post('/api/admin-login', authLimiter, (req, res) => {
   const { code } = req.body;
   const data = loadData();
   if (code === getAdminCode(data)) {
@@ -618,7 +676,7 @@ app.put('/api/admin/families/:id', requireAdmin, (req, res) => {
   const family = data.families.find(f => f.id === req.params.id);
   if (!family) return res.status(404).json({ error: 'Nicht gefunden' });
   const { name } = req.body;
-  if (name !== undefined) family.name = name.trim();
+  if (name !== undefined) family.name = sanitizeName(name);
   saveData(data);
   res.json(adminFamily(family));
 });
