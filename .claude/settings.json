@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "spook": {
+      "source": {
+        "source": "github",
+        "repo": "frenck/spook"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "spook@spook": true
+  }
+}
